@@ -1,0 +1,1106 @@
+/* ============================================================
+   LaunchLab Design System — single-file reference
+   Это самодостаточный референс. Скопируй :root-переменные и
+   нужные блоки в свой проект — этого достаточно для повторения
+   визуального языка приложения (web, desktop-first, адаптивный).
+   ============================================================ */
+
+/* ===========================================================
+   1. TOKENS — Design Variables
+   =========================================================== */
+:root {
+  /* — Surfaces & text — */
+  --bg: #F7F8FB;
+  --surface: #FFFFFF;
+  --surface-2: #F1F3F8;
+  --border: #E6E9F0;
+  --border-strong: #D5DAE4;
+
+  --text: #1A2236;        /* основной текст; контраст с --surface ~14:1 */
+  --text-2: #4A5578;      /* вторичный (подписи, hint); контраст ~7:1 */
+  --text-3: #6C7592;      /* третичный (метаданные); контраст ~4.5:1 — WCAG AA */
+  --text-muted: #8A92A8;  /* плейсхолдер/выключенный; контраст ~3:1 — WCAG AA Large */
+
+  /* — Sidebar (тёмная панель навигации) — */
+  --sidebar-bg: #1E2A4A;
+  --sidebar-bg-2: #18213A;
+  --sidebar-text: #B8C0D9;
+  --sidebar-text-active: #FFFFFF;
+  --sidebar-hover: #28345A;
+
+  /* — Brand & accent — */
+  --accent: #14B8A6;       /* основной teal: акценты, полоски, focus-ring, иконки */
+  --accent-soft: #CCFBF1;
+  --accent-text: #0F766E;  /* teal-текст на светлом фоне; контраст 5.5:1 */
+  --accent-fill: #0D9488;  /* заливка под белый текст (primary-кнопка, send, switch): teal-600,
+                              3.8:1 — осознанный компромисс яркость/читаемость (у --accent
+                              с белым лишь 2.5:1; строго AA 4.5:1 дал бы тёмный #0F766E) */
+  --accent-2: #3B82F6;     /* дополнительный синий */
+
+  /* — Semantic / status. soft = фон, text = читаемый цвет на soft. — */
+  --success:      #10B981;
+  --success-soft: #D1FAE5;
+  --success-text: #065F46;
+  --warning:      #F59E0B;
+  --warning-soft: #FEF3C7;
+  --warning-text: #92540C;
+  --danger:       #EF4444;
+  --danger-soft:  #FEE2E2;
+  --danger-text:  #B91C1C;
+  --danger-fill:  #DC2626;  /* заливка под белый текст (danger-кнопка): 4.5:1 — WCAG AA */
+  --info:         var(--accent-2);  /* следует за темой */
+
+  /* — Type tags (карточные категории) — */
+  --type-email:        #14B8A6; --type-email-bg:    #CCFBF1; --type-email-text:    #0D6B63;
+  --type-announce:     #8B5CF6; --type-announce-bg: #EDE4FE; --type-announce-text: #5B3BA8;
+  --type-note:         #F59E0B; --type-note-bg:     #FEF3C7; --type-note-text:     #92540C;
+  --type-landing:      #EC4899; --type-landing-bg:  #FCE7F3; --type-landing-text:  #9D1D5C;
+
+  /* — Stage colours (цикл запуска: прогрев / продажи / закрытие) — */
+  --stage-warmup: #3B82F6;
+  --stage-sales:  #14B8A6;
+  --stage-close:  #F59E0B;
+
+  /* — Shadows — */
+  --shadow-sm:   0 1px 2px rgba(26, 34, 54, .04);
+  --shadow-md:   0 2px 8px rgba(26, 34, 54, .06), 0 1px 2px rgba(26, 34, 54, .04);
+  --shadow-lg:   0 10px 30px rgba(26, 34, 54, .08), 0 4px 8px rgba(26, 34, 54, .04);
+  --shadow-drag: 0 16px 40px rgba(20, 184, 166, .22), 0 4px 12px rgba(26, 34, 54, .08);
+
+  /* — Overlay (фон модалок) — */
+  --overlay-bg: rgba(15, 23, 42, .42);
+
+  /* — Radii — */
+  --radius-sm: 6px;
+  --radius:    10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* — Spacing scale (опционально, можно использовать в JS-проектах) — */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* — Layout — */
+  --sidebar-w: 236px;
+  --sidebar-w-collapsed: 64px;
+  --topbar-h: 64px;
+
+  /* — Motion — */
+  --ease: cubic-bezier(.4, .2, .2, 1);
+  --t-fast: .12s ease;
+  --t-base: .22s var(--ease);
+}
+
+/* — Прогрессивное улучшение: акцентно-окрашенный shadow-drag через color-mix
+     для современных браузеров. Старые остаются на rgba-fallback из :root. — */
+@supports (color: color-mix(in srgb, red 1%, blue)) {
+  :root {
+    --shadow-drag: 0 16px 40px color-mix(in srgb, var(--accent) 22%, transparent), 0 4px 12px rgba(26, 34, 54, .08);
+  }
+}
+
+/* ===========================================================
+   1a. DARK THEME
+   Включение: data-theme="dark" на <html>. Всё остальное — те же
+   компоненты: они ссылаются на токены и перекрашиваются сами.
+   Не переопределяем: --accent, --accent-fill, --danger-fill,
+   основные success/warning/danger, stage-цвета — яркие цвета
+   на тёмном фоне работают как есть.
+   =========================================================== */
+[data-theme="dark"] {
+  color-scheme: dark;  /* нативные контролы и скроллбары — тёмные */
+
+  --bg: #0F1526;
+  --surface: #182036;
+  --surface-2: #202A44;
+  --border: #2B3654;
+  --border-strong: #3C4870;
+
+  --text: #E9EDF8;
+  --text-2: #B9C1D8;
+  --text-3: #8D96B2;
+  --text-muted: #687092;
+
+  /* Сайдбар чуть темнеет, чтобы отличаться от посветлевших поверхностей */
+  --sidebar-bg: #18213A;
+  --sidebar-bg-2: #131A2E;
+  --sidebar-hover: #232F52;
+
+  /* На тёмном фоне teal-600 бликует — заливка кнопок приглушается
+     до teal-700 (белый текст на нём 5.5:1, только лучше) */
+  --accent-fill: #0F766E;
+
+  /* Пастель не работает на тёмном: soft-фоны — тёмные тона того же
+     оттенка, text-пары — светлые (400-я ступень палитры) */
+  --accent-soft: #12332F;
+  --accent-text: #2DD4BF;
+
+  /* Семантика на тёмном опускается на ступень (500 → 600),
+     иначе чистые цвета бликуют. Заливка danger — на две (700). */
+  --success:      #059669;
+  --success-soft: #0D3528;
+  --success-text: #6EE7B7;
+  --warning:      #D97706;
+  --warning-soft: #3A2B10;
+  --warning-text: #FCD34D;
+  --danger:       #DC2626;
+  --danger-soft:  #421A1F;
+  --danger-text:  #FCA5A5;
+  --danger-fill:  #B91C1C;
+  --accent-2:     #2563EB;   /* --info следует за ним автоматически */
+
+  --stage-warmup: #2563EB;
+  --stage-close:  #D97706;   /* stage-sales остаётся фирменным teal */
+
+  --type-email-bg:    #12332F; --type-email-text:    #5EEAD4;
+  --type-announce-bg: #2B2350; --type-announce-text: #C4B5FD;
+  --type-note-bg:     #3A2B10; --type-note-text:     #FCD34D;
+  --type-landing-bg:  #401A30; --type-landing-text:  #F9A8D4;
+
+  /* Тени на тёмном почти не видны — глубже и чернее */
+  --shadow-sm:   0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-md:   0 2px 8px rgba(0, 0, 0, .35), 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-lg:   0 10px 30px rgba(0, 0, 0, .45), 0 4px 8px rgba(0, 0, 0, .3);
+  --shadow-drag: 0 16px 40px rgba(20, 184, 166, .25), 0 4px 12px rgba(0, 0, 0, .4);
+
+  --overlay-bg: rgba(2, 6, 16, .6);
+}
+/* Приглушённый --danger на тёмной поверхности слаб для текста —
+   опасный пункт меню берёт светлую text-пару */
+[data-theme="dark"] .dropdown-item.danger { color: var(--danger-text); }
+/* Стрелка селекта захардкожена в data-URI — в тёмной теме светлый вариант */
+[data-theme="dark"] .select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23B9C1D8' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+/* Иконки кнопки-переключателя темы (луна в светлой, солнце в тёмной) */
+.theme-icon-sun { display: none; }
+[data-theme="dark"] .theme-icon-moon { display: none; }
+[data-theme="dark"] .theme-icon-sun { display: block; }
+
+/* ===========================================================
+   2. BASE
+   =========================================================== */
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: clip;
+  overscroll-behavior-x: none;
+}
+a { color: var(--accent-text); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: .875em;
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--text);
+}
+hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
+
+/* ===========================================================
+   3. APP SHELL — Sidebar + Topbar + Main
+   =========================================================== */
+.app {
+  min-height: 100vh;
+  padding-left: var(--sidebar-w);
+  transition: padding-left var(--t-base);
+}
+.app.sidebar-collapsed { padding-left: var(--sidebar-w-collapsed); }
+
+/* — Sidebar — */
+.sidebar {
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  left: 0; top: 0;
+  width: var(--sidebar-w);
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: width var(--t-base);
+  z-index: 15;
+}
+.sidebar.collapsed { width: var(--sidebar-w-collapsed); }
+
+/* Кнопка-кружок на границе сайдбара. Position: fixed (а не absolute) —
+   важно: внутри .sidebar есть overflow-x: hidden, который обрезает выступающую
+   кнопку. Привязка к --sidebar-w / --sidebar-w-collapsed переключает позицию. */
+.sidebar-toggle {
+  position: fixed;
+  top: 26px;
+  left: calc(var(--sidebar-w) - 11px);
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  box-shadow: var(--shadow-sm);
+  z-index: 20;
+  transition: left var(--t-base), color var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+  padding: 0;
+}
+/* Класс свернутости вешается на body (.app-collapsed) — он гарантированно
+   доступен .sidebar-toggle, который лежит вне .sidebar (важно: .sidebar
+   имеет overflow-x: hidden и обрезал бы выступающую кнопку). */
+body.app-collapsed .sidebar-toggle { left: calc(var(--sidebar-w-collapsed) - 11px); }
+body.app-collapsed .sidebar-toggle svg { transform: rotate(180deg); }
+.sidebar-toggle:hover { color: var(--text); border-color: var(--border-strong); box-shadow: var(--shadow-md); }
+.sidebar-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sidebar-toggle svg { transition: transform var(--t-base); }
+
+.sidebar-brand {
+  padding: 20px 22px 22px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.brand-mark {
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  display: grid; place-items: center;
+  color: white; font-weight: 700; font-size: 14px;
+  letter-spacing: -.02em;
+  box-shadow: 0 4px 10px color-mix(in srgb, var(--accent) 30%, transparent);
+  flex-shrink: 0;
+}
+.brand-name { font-weight: 600; font-size: 15px; color: white; letter-spacing: -.01em; }
+.brand-sub { font-size: 11px; color: var(--sidebar-text); opacity: .6; letter-spacing: .04em; text-transform: uppercase; }
+.sidebar.collapsed .sidebar-brand { padding: 18px 0; justify-content: center; gap: 0; }
+.sidebar.collapsed .brand-name,
+.sidebar.collapsed .brand-sub,
+.sidebar.collapsed .sidebar-brand > div:last-child { display: none; }
+
+.sidebar-section-label {
+  padding: 18px 22px 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  opacity: .5;
+}
+.sidebar.collapsed .sidebar-section-label { display: none; }
+
+.nav-item {
+  padding: 10px 22px;
+  display: flex; align-items: center; gap: 12px;
+  cursor: pointer;
+  color: var(--sidebar-text);
+  font-size: 13.5px;
+  font-family: inherit;
+  transition: background var(--t-fast), color var(--t-fast);
+  position: relative;
+  /* nav-item — это <a> или <button>, нужны сбросы для button и a */
+  background: transparent;
+  border: none;
+  width: 100%;
+  text-align: left;
+  text-decoration: none;
+}
+.nav-item:hover { background: var(--sidebar-hover); color: var(--sidebar-text-active); }
+.nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.nav-item.active { background: var(--sidebar-hover); color: var(--sidebar-text-active); font-weight: 500; }
+.nav-item.active::before {
+  content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px;
+  background: var(--accent); border-radius: 0 3px 3px 0;
+}
+.nav-item svg { width: 18px; height: 18px; flex-shrink: 0; }
+.nav-item .nav-badge {
+  margin-left: auto;
+  /* На тёмном сайдбаре: яркий teal + тёмный текст (5.7:1); белый на teal не проходит AA */
+  background: var(--accent); color: var(--sidebar-bg);
+  font-size: 10.5px; font-weight: 600;
+  padding: 2px 7px; border-radius: 10px; line-height: 1.4;
+}
+.sidebar.collapsed .nav-item {
+  padding: 10px 0; justify-content: center; gap: 0;
+}
+.sidebar.collapsed .nav-item > span:not(.nav-badge) { display: none; }
+.sidebar.collapsed .nav-item .nav-badge {
+  position: absolute; top: 2px; right: 10px; margin: 0;
+  min-width: 16px; height: 16px; padding: 0 4px; font-size: 9.5px;
+  line-height: 16px; border: 1.5px solid var(--sidebar-bg); border-radius: 9px;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding: 16px 22px;
+  border-top: 1px solid rgba(255,255,255,.06);
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12.5px;
+}
+.sidebar.collapsed .sidebar-foot { padding: 16px 0; justify-content: center; }
+.sidebar.collapsed .foot-meta { display: none; }
+.user-avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: white; font-weight: 600; font-size: 12px;
+  display: grid; place-items: center; flex-shrink: 0;
+}
+.foot-meta-name { color: white; font-weight: 500; line-height: 1.25; }
+.foot-meta-role { font-size: 11px; opacity: .6; }
+
+/* — User footer (расширение): Google-аватар + имя + почта + шестерёнка → меню.
+   Старая разметка (.user-avatar с инициалами + .foot-meta с name/role) работает
+   без изменений; всё ниже — аддитивное. Аватар грузится из Google (picture из SSO),
+   при сбое загрузки показываются инициалы-фолбэк. Меню — на базе .dropdown (вариант .up). */
+.foot-meta { flex: 1; min-width: 0; }
+.foot-meta-name, .foot-meta-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.foot-meta-email { font-size: 11px; color: var(--sidebar-text); opacity: .55; line-height: 1.3; }
+.user-avatar { position: relative; overflow: hidden; }
+.user-avatar img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; border-radius: inherit;
+}
+.user-avatar img[hidden], .user-avatar.is-broken img { display: none; }
+.sidebar-foot-gear {
+  flex-shrink: 0; width: 30px; height: 30px;
+  display: grid; place-items: center;
+  border: none; background: transparent; color: var(--sidebar-text);
+  border-radius: var(--radius-sm); cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.sidebar-foot-gear:hover { background: var(--sidebar-hover); color: var(--sidebar-text-active); }
+.sidebar-foot-gear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* В свёрнутом сайдбаре остаётся только аватар (он и открывает меню — wired в приложении) */
+.sidebar.collapsed .sidebar-foot-gear { display: none; }
+
+/* — Main column — */
+.main {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* — Topbar — */
+.topbar {
+  height: var(--topbar-h);
+  display: flex; align-items: center;
+  padding: 0 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 10;
+  gap: 16px;
+}
+.topbar-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.topbar-spacer { flex: 1; }
+.topbar-chip {
+  padding: 6px 12px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.content { padding: 32px 40px; max-width: 1200px; }
+@media (max-width: 768px) { .content { padding: 20px 16px; } }
+
+/* ===========================================================
+   4. TYPOGRAPHY
+   =========================================================== */
+.h1 { font-size: 28px; font-weight: 700; letter-spacing: -.02em; margin: 0 0 16px; color: var(--text); }
+.h2 { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 32px 0 16px; color: var(--text); }
+.h3 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; color: var(--text); }
+.muted { color: var(--text-2); }
+.small { font-size: 12.5px; color: var(--text-3); }
+.caption { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .08em; }
+
+/* ===========================================================
+   5. BUTTONS
+   =========================================================== */
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 16px;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast), transform var(--t-fast);
+}
+.btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled, .btn[disabled] { opacity: .5; cursor: not-allowed; }
+.btn-sm { padding: 6px 11px; font-size: 12.5px; gap: 6px; border-radius: var(--radius-sm); }
+.btn-lg { padding: 11px 20px; font-size: 14.5px; }
+
+.btn-primary {
+  background: var(--accent-fill);
+  color: white;
+  border-color: transparent;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--accent-fill) 20%, transparent);
+}
+.btn-primary:hover { filter: brightness(1.1); background: var(--accent-fill); border-color: transparent; }
+.btn-primary:disabled, .btn-primary[disabled] { background: var(--text-muted); box-shadow: none; opacity: 1; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-2);
+}
+.btn-ghost:hover { background: var(--surface-2); color: var(--text); border-color: transparent; }
+
+.btn-danger {
+  background: var(--danger-fill);
+  color: white;
+  border-color: transparent;
+}
+.btn-danger:hover { background: var(--danger-fill); filter: brightness(.92); border-color: transparent; }
+
+.btn-icon {
+  width: 32px; height: 32px;
+  padding: 0;
+  display: grid; place-items: center;
+  border-radius: var(--radius-sm);
+}
+
+/* ===========================================================
+   6. FORM CONTROLS
+   =========================================================== */
+.field { display: block; margin-bottom: 14px; }
+.label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
+.input, .textarea, .select {
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.input:hover, .textarea:hover, .select:hover { border-color: var(--border-strong); }
+.input:focus, .textarea:focus, .select:focus {
+  outline: none;
+  border-color: var(--accent);
+  /* Fallback: статичный teal-ring для браузеров без color-mix.
+     Прогрессивно усиливается до тематического кольца через @supports ниже. */
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, .22);
+}
+@supports (color: color-mix(in srgb, red 1%, blue)) {
+  .input:focus, .textarea:focus, .select:focus {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+.input::placeholder, .textarea::placeholder { color: var(--text-muted); }
+.textarea { min-height: 80px; resize: vertical; line-height: 1.5; }
+.select { appearance: none; padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%234A5578' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center;
+}
+.hint { font-size: 11.5px; color: var(--text-3); margin-top: 4px; }
+.field.error .input,
+.field.error .textarea,
+.field.error .select { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(239, 68, 68, .15); }
+@supports (color: color-mix(in srgb, red 1%, blue)) {
+  .field.error .input,
+  .field.error .textarea,
+  .field.error .select { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 15%, transparent); }
+}
+.field.error .hint { color: var(--danger-text); }
+
+/* — Checkbox — */
+.checkbox { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; font-size: 13.5px; }
+.checkbox input { appearance: none; width: 16px; height: 16px; border: 1.5px solid var(--border-strong);
+  border-radius: 4px; background: var(--surface); cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast); position: relative; }
+.checkbox input:checked { background: var(--accent-fill); border-color: var(--accent-fill); }
+.checkbox input:checked::after { content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px;
+  border: solid white; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.checkbox input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* — Switch — */
+.switch { position: relative; display: inline-block; width: 36px; height: 20px; flex-shrink: 0; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .slider { position: absolute; inset: 0; background: var(--border-strong); border-radius: 999px;
+  transition: background var(--t-fast); cursor: pointer; }
+.switch .slider::before { content: ""; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px;
+  background: white; border-radius: 50%; transition: transform var(--t-fast); box-shadow: var(--shadow-sm); }
+.switch input:checked + .slider { background: var(--accent-fill); }
+.switch input:checked + .slider::before { transform: translateX(16px); }
+.switch input:focus-visible + .slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ===========================================================
+   7. BADGES, CHIPS, PILLS
+   =========================================================== */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--text-2);
+  letter-spacing: .01em;
+}
+.badge-accent { background: var(--accent-soft); color: var(--accent-text); }
+.badge-warning { background: var(--warning-soft); color: var(--warning-text); }
+.badge-danger  { background: var(--danger-soft);  color: var(--danger-text); }
+.badge-success { background: var(--success-soft); color: var(--success-text); }
+.badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+  border: 1px solid transparent;
+}
+.chip:hover { background: var(--border); color: var(--text); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chip.active { background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent); font-weight: 500; }
+@supports (color: color-mix(in srgb, red 1%, blue)) {
+  .chip.active { border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+}
+
+/* — Type chips (категории карточек) — */
+.type-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: .01em;
+}
+.type-chip-email    { background: var(--type-email-bg);    color: var(--type-email-text); }
+.type-chip-announce { background: var(--type-announce-bg); color: var(--type-announce-text); }
+.type-chip-note     { background: var(--type-note-bg);     color: var(--type-note-text); }
+.type-chip-landing  { background: var(--type-landing-bg);  color: var(--type-landing-text); }
+
+/* ===========================================================
+   8. CARDS (kanban-like + plain content)
+   =========================================================== */
+.card-plain {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+.card-plain.elevated { box-shadow: var(--shadow-md); }
+.card-plain h4 { margin: 0 0 8px; font-size: 15px; font-weight: 600; color: var(--text); }
+.card-plain p { margin: 0; color: var(--text-2); }
+
+/* — Kanban / task card — */
+.task-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  box-shadow: var(--shadow-sm);
+  cursor: grab;
+  position: relative;
+  transition: transform var(--t-fast), box-shadow var(--t-fast), border-color var(--t-fast);
+  width: 280px;
+}
+.task-card:hover { box-shadow: var(--shadow-md); border-color: var(--border-strong); transform: translateY(-1px); }
+.task-card.dragging { transform: rotate(-1deg); box-shadow: var(--shadow-drag); cursor: grabbing; }
+.task-card::before {
+  content: ""; position: absolute; left: 0; top: 12px; bottom: 12px;
+  width: 3px; background: var(--accent); border-radius: 0 3px 3px 0;
+}
+.task-card.tone-warmup::before { background: var(--stage-warmup); }
+.task-card.tone-sales::before  { background: var(--stage-sales); }
+.task-card.tone-close::before  { background: var(--stage-close); }
+
+.task-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.task-card-time { font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; margin-left: auto; }
+.task-card-title { font-size: 13.5px; font-weight: 500; color: var(--text); margin: 4px 0 6px; line-height: 1.4; }
+.task-card-preview { font-size: 12px; color: var(--text-2); line-height: 1.45; max-height: 36px; overflow: hidden; }
+.task-card-foot { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 11.5px; color: var(--text-3); }
+.status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.status-dot.s-todo { background: var(--text-muted); }
+.status-dot.s-doing { background: var(--info); }
+.status-dot.s-done { background: var(--success); }
+
+/* — Board (контейнер kanban-колонок) —
+   Обязателен: на body стоит overflow-x: clip, без своего скролл-контейнера
+   лишние колонки будут молча обрезаны без возможности доскроллить. */
+.board {
+  display: flex; gap: 16px; align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  overscroll-behavior-x: contain;
+}
+
+/* — Column (kanban) — */
+.column {
+  width: 320px; flex-shrink: 0;
+  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+  max-height: calc(100vh - var(--topbar-h) - 120px);
+  max-height: calc(100dvh - var(--topbar-h) - 120px);
+  overflow-y: auto;   /* карточки сверх высоты скроллятся, а не вываливаются */
+  overscroll-behavior-y: contain;
+}
+.column-head { display: flex; align-items: center; gap: 8px; padding: 0 4px 4px; }
+.column-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.column-count { background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+  padding: 1px 7px; font-size: 11px; color: var(--text-2); margin-left: auto; }
+
+/* ===========================================================
+   9. MODALS
+   =========================================================== */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: var(--overlay-bg);
+  display: none;  /* по умолчанию скрыт */
+  place-items: center;
+  padding: 24px; z-index: 100;
+}
+/* Открытое состояние — управляется классом .open (см. JS). */
+.modal-backdrop.open {
+  display: grid;
+  animation: fadeIn .18s ease;
+}
+.modal-backdrop.open .modal { animation: popIn .22s var(--ease); }
+/* Защита: даже если родительский CSS reset переопределит [hidden] без !important,
+   .modal-backdrop с атрибутом hidden гарантированно скрыт. */
+.modal-backdrop[hidden] { display: none !important; }
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+.modal {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  width: 560px;
+  max-width: 100%;
+  max-height: 90vh;
+  display: flex; flex-direction: column;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.modal.modal-narrow { width: 460px; }
+@keyframes popIn { from { opacity: 0; transform: scale(.96) translateY(8px) } to { opacity: 1; transform: scale(1) translateY(0) } }
+.modal-head {
+  padding: 18px 22px;
+  display: flex; align-items: center; gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h2 { margin: 0; font-size: 16px; font-weight: 600; color: var(--text); }
+.modal-close {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  display: grid; place-items: center;
+  margin-left: auto;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.modal-close:hover { background: var(--surface-2); color: var(--text); }
+.modal-body { padding: 22px; overflow-y: auto; flex: 1; }
+.modal-foot {
+  padding: 14px 22px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  display: flex; align-items: center; gap: 10px;
+}
+.modal-foot .spacer { flex: 1; }
+
+/* ===========================================================
+   10. DROPDOWN MENU
+   =========================================================== */
+.dropdown { position: relative; display: inline-block; }
+.dropdown-menu {
+  position: absolute; top: calc(100% + 6px); left: 0;
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  z-index: 50;
+  display: none;  /* по умолчанию скрыт; открывается через .open (см. JS) */
+}
+.dropdown-menu.open { display: block; animation: popIn .14s var(--ease); }
+.dropdown-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13.5px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  transition: background var(--t-fast);
+}
+.dropdown-item:hover { background: var(--surface-2); }
+.dropdown-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.dropdown-item.danger { color: var(--danger); }
+.dropdown-item.danger:hover { background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
+.dropdown-divider { height: 1px; background: var(--border); margin: 4px 0; }
+/* Модификаторы позиционирования: .right — выровнять по правому краю; .up — открыть вверх
+   (для меню в самом низу экрана: user footer в сайдбаре, выбор модели в чате). */
+.dropdown-menu.right { left: auto; right: 0; }
+.dropdown-menu.up { top: auto; bottom: calc(100% + 6px); }
+.dropdown-menu.up.open { animation: popInUp .14s var(--ease); }
+@keyframes popInUp { from { opacity: 0; transform: scale(.96) translateY(-8px) } to { opacity: 1; transform: scale(1) translateY(0) } }
+
+/* ===========================================================
+   11. TOAST / ALERT
+   =========================================================== */
+.toast {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  min-width: 280px;
+  max-width: 380px;
+}
+.toast-success { border-left-color: var(--success); }
+.toast-warning { border-left-color: var(--warning); }
+.toast-danger  { border-left-color: var(--danger); }
+.toast-icon {
+  width: 28px; height: 28px; flex-shrink: 0;
+  border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent-text);
+  font-weight: 700;
+}
+.toast-success .toast-icon { background: var(--success-soft); color: var(--success-text); }
+.toast-warning .toast-icon { background: var(--warning-soft); color: var(--warning-text); }
+.toast-danger  .toast-icon { background: var(--danger-soft);  color: var(--danger-text); }
+.toast b { display: block; font-size: 13px; font-weight: 600; }
+.toast span { font-size: 11.5px; color: var(--text-2); display: block; }
+
+/* — Inline alert (для форм / страниц) — */
+.alert {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  display: flex; align-items: flex-start; gap: 10px;
+}
+.alert-success { background: var(--success-soft); color: var(--success-text); border-color: color-mix(in srgb, var(--success) 30%, transparent); }
+.alert-warning { background: var(--warning-soft); color: var(--warning-text); border-color: color-mix(in srgb, var(--warning) 35%, transparent); }
+.alert-danger  { background: var(--danger-soft);  color: var(--danger-text);  border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+
+/* ===========================================================
+   12. TABS
+   =========================================================== */
+.tabs {
+  display: flex; gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.tab {
+  padding: 9px 14px;
+  font-size: 13.5px;
+  font-family: inherit;
+  color: var(--text-2);
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color var(--t-fast), border-color var(--t-fast);
+}
+.tab:hover { color: var(--text); }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--radius-sm); }
+.tab.active { color: var(--accent-text); border-bottom-color: var(--accent); font-weight: 500; }
+
+/* ===========================================================
+   13. LAYOUT UTILITIES
+   =========================================================== */
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.row.gap-lg { gap: 20px; }
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: repeat(2, 1fr); }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid-4 { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 768px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+}
+
+.section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  margin: 16px 0 32px;
+}
+
+.swatch {
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.swatch-preview { height: 70px; }
+.swatch-meta {
+  padding: 10px 12px;
+  display: flex; align-items: baseline; justify-content: space-between;
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+}
+.swatch-meta b { font-weight: 600; color: var(--text); }
+.swatch-meta code { font-size: 10.5px; background: transparent; padding: 0; color: var(--text-3); }
+
+.shadow-demo {
+  height: 60px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  display: grid; place-items: center;
+  font-size: 12px; color: var(--text-2);
+}
+.radius-demo {
+  width: 90px; height: 60px;
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  display: grid; place-items: center;
+  font-size: 12px; color: var(--accent-text); font-weight: 500;
+}
+
+/* — Mobile bottom-sheet (паттерн для попапов на узком экране) — */
+.bottom-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  background: var(--surface);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  padding: 20px 18px 28px;
+  box-shadow: 0 -10px 30px rgba(0,0,0,.12);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.bottom-sheet::before {
+  content: ""; display: block; margin: 0 auto 14px;
+  width: 36px; height: 4px; border-radius: 2px;
+  background: var(--border-strong);
+}
+/* Preview-вариант для дизайн-системы: спокойно ложится в поток,
+   без position: fixed и без направленной вверх тени. */
+.bottom-sheet--preview {
+  position: static;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  max-height: none;
+}
+
+/* ===========================================================
+   14. CHAT — полноэкранный чат с агентом
+   Вдохновлён ChatGPT / Claude / Gemini. Обязательны: микрофон (.chat-mic)
+   и выбор модели (.chat-model на базе .dropdown). Микрофон и выбор модели —
+   только UI: распознавание речи и переключение модели подключает приложение.
+   Разметка:
+     <main class="main">
+       <header class="topbar">…</header>
+       <div class="chat">
+         <div class="chat-thread"> .chat-empty | .chat-msg.user | .chat-msg.assistant </div>
+         <div class="chat-composer"><div class="chat-composer-inner"> .chat-input-wrap … </div></div>
+       </div>
+     </main>
+   =========================================================== */
+.chat {
+  display: flex; flex-direction: column;
+  min-height: 0;
+  height: calc(100vh - var(--topbar-h));
+  height: calc(100dvh - var(--topbar-h));
+  background: var(--bg);
+}
+
+/* — Лента сообщений — */
+.chat-thread {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  padding: 28px 0 12px;
+  display: flex; flex-direction: column; gap: 22px;
+}
+.chat-msg {
+  width: 100%; max-width: 768px; margin: 0 auto;
+  padding: 0 24px;
+  display: flex; gap: 12px;
+}
+.chat-msg.user { justify-content: flex-end; }
+.chat-msg.assistant { justify-content: flex-start; }
+.chat-avatar {
+  flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff; font-size: 14px; display: grid; place-items: center;
+  margin-top: 2px;
+}
+.chat-bubble {
+  font-size: 14.5px; line-height: 1.6; color: var(--text);
+  white-space: pre-wrap; word-wrap: break-word;
+}
+.chat-msg.user .chat-bubble {
+  max-width: 80%;
+  background: var(--surface-2); border: 1px solid var(--border);
+  padding: 11px 15px;
+  border-radius: var(--radius-lg); border-bottom-right-radius: var(--radius-sm);
+}
+.chat-msg.assistant .chat-bubble { max-width: calc(100% - 40px); padding-top: 3px; }
+
+/* Индикатор «агент печатает» */
+.chat-typing { display: inline-flex; gap: 4px; padding: 6px 2px; }
+.chat-typing span {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-muted); animation: chatTyping 1.2s infinite ease-in-out;
+}
+.chat-typing span:nth-child(2) { animation-delay: .15s; }
+.chat-typing span:nth-child(3) { animation-delay: .3s; }
+@keyframes chatTyping { 0%,60%,100% { opacity: .25; transform: translateY(0) } 30% { opacity: 1; transform: translateY(-3px) } }
+
+/* — Пустое состояние (до первого сообщения) — */
+.chat-empty { margin: auto; width: 100%; max-width: 640px; padding: 0 24px; text-align: center; }
+.chat-empty-icon {
+  width: 52px; height: 52px; margin: 0 auto 16px; border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff; font-size: 26px; display: grid; place-items: center; box-shadow: var(--shadow-md);
+}
+.chat-empty-title { font-size: 22px; font-weight: 600; color: var(--text); letter-spacing: -.01em; margin: 0 0 6px; }
+.chat-empty-sub { font-size: 14px; color: var(--text-3); margin: 0 0 24px; }
+.chat-suggestions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; text-align: left; }
+.chat-suggestion {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; font-size: 13px; color: var(--text-2); cursor: pointer; font-family: inherit;
+  transition: border-color var(--t-fast), transform var(--t-fast), box-shadow var(--t-fast);
+}
+.chat-suggestion:hover { border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.chat-suggestion b { display: block; color: var(--text); font-weight: 600; margin-bottom: 2px; }
+
+/* — Композитор (поле ввода) — */
+.chat-composer { flex-shrink: 0; padding: 10px 24px 16px; background: var(--bg); }
+.chat-composer-inner { max-width: 768px; margin: 0 auto; }
+.chat-input-wrap {
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm); padding: 10px 10px 8px 14px;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.chat-input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.chat-input {
+  width: 100%; border: none; background: transparent; resize: none; font-family: inherit;
+  font-size: 14.5px; line-height: 1.5; color: var(--text);
+  padding: 4px 2px 6px; max-height: 200px; overflow-y: auto;
+}
+.chat-input:focus { outline: none; }
+.chat-input::placeholder { color: var(--text-muted); }
+.chat-input-actions { display: flex; align-items: center; gap: 8px; }
+.chat-actions-spacer { flex: 1; }
+
+/* Выбор модели (слева снизу) — на базе .dropdown + .dropdown-menu.up */
+.chat-model-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); background: transparent; border-radius: 999px;
+  padding: 5px 10px; font-family: inherit; font-size: 12.5px; font-weight: 500; color: var(--text-2);
+  cursor: pointer; transition: background var(--t-fast), border-color var(--t-fast);
+}
+.chat-model-btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
+.chat-model-btn .chev { color: var(--text-muted); }
+.chat-model .dropdown-menu { min-width: 240px; }
+.chat-model .dropdown-item { align-items: flex-start; }
+.chat-model .dropdown-item > span { display: flex; flex-direction: column; line-height: 1.3; }
+.chat-model .dropdown-item small { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+.chat-model .dropdown-item.selected { color: var(--accent-text); background: var(--accent-soft); }
+
+/* Микрофон и отправка (справа снизу) */
+.chat-mic, .chat-send {
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%;
+  display: grid; place-items: center; border: none; cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), transform var(--t-fast);
+}
+.chat-mic { background: transparent; color: var(--text-3); }
+.chat-mic:hover { background: var(--surface-2); color: var(--text); }
+.chat-mic:focus-visible, .chat-send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Состояние активной записи голоса */
+.chat-mic.recording { background: var(--danger); color: #fff; animation: chatMicPulse 1.6s infinite; }
+@keyframes chatMicPulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 45%, transparent); }
+  70%  { box-shadow: 0 0 0 8px color-mix(in srgb, var(--danger) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 0%, transparent); }
+}
+.chat-send { background: var(--accent-fill); color: #fff; }
+.chat-send:hover { filter: brightness(1.12); transform: translateY(-1px); }
+.chat-send:disabled { background: var(--border-strong); color: var(--surface); cursor: not-allowed; transform: none; }
+.chat-disclaimer { text-align: center; font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+
+/* — Адаптив чата — */
+@media (max-width: 640px) {
+  .chat-thread { gap: 18px; padding-top: 18px; }
+  .chat-msg { padding: 0 14px; }
+  .chat-msg.user .chat-bubble { max-width: 88%; }
+  .chat-composer { padding: 8px 14px 14px; }
+  .chat-suggestions { grid-template-columns: 1fr; }
+  .chat-model-btn .chat-model-name { display: none; } /* на узком — только иконка модели */
+}
+
+/* — Mobile burger (видна только на ≤768) — */
+.mobile-burger {
+  display: none;
+  width: 36px; height: 36px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  padding: 0;
+  align-items: center; justify-content: center;
+}
+.mobile-burger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* — Mobile backdrop при открытом сайдбаре — */
+.mobile-overlay {
+  display: none;
+  position: fixed; inset: 0; z-index: 14;
+  background: var(--overlay-bg);
+}
+.mobile-overlay.open { display: block; }
+
+/* — Mobile breakpoints — */
+@media (max-width: 768px) {
+  .app { padding-left: 0; }
+  .sidebar { transform: translateX(-100%); transition: transform var(--t-base); z-index: 16; }
+  .sidebar.mobile-open { transform: translateX(0); }
+  .sidebar-toggle { display: none; }
+  .topbar { padding: 0 16px; }
+  .mobile-burger { display: inline-flex; }
+  .modal-backdrop { padding: 0; align-items: flex-end; }
+  .modal { width: 100%; max-width: 100%; border-radius: var(--radius-xl) var(--radius-xl) 0 0; max-height: 92vh; }
+  .task-card, .column { width: 100%; max-width: calc(100vw - 32px); }
+}

@@ -1,0 +1,66 @@
+name: Checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: auth_test
+          POSTGRES_PASSWORD: auth_test_only
+          POSTGRES_DB: auth_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U auth_test -d auth_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL_TEST: postgres://auth_test:auth_test_only@127.0.0.1:5432/auth_test
+      REDIS_URL_TEST: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Next.js runtime for adapter tests
+        working-directory: examples/nextjs-demo
+        run: npm ci
+      - run: npm run check
+      - run: npm audit --omit=dev --audit-level=high
+      - name: Build production image
+        run: docker build -t auth-service-ci .
+      - name: Check example copies
+        run: npm run sync-examples && git diff --exit-code -- examples
+      - name: Hono + Vite
+        working-directory: examples/hono-vite-demo
+        run: npm ci && npm run typecheck && npm run build
+      - name: Next.js
+        working-directory: examples/nextjs-demo
+        env:
+          AUTH_URL: http://localhost:3016
+          AUTH_APP_URL: http://localhost:3005
+          AUTH_COOKIE_SECRET: ci-only-cookie-secret-for-build-not-production
+        run: npm ci && npm run build
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Install pinned secret scanner
+        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - name: Scan Git history
+        run: |
+          "$(go env GOPATH)/bin/gitleaks" git --redact --no-banner .

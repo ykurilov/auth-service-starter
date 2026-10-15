@@ -1,0 +1,67 @@
+import { Resend } from 'resend';
+import type { Logger } from 'pino';
+import type { Mailer, OutgoingEmail } from '../../ports/mailer.js';
+
+// Минимальный интерфейс того, что нам нужно от resend-клиента — позволяет
+// подменить его в тестах фейком без реальной сети.
+export interface ResendClientLike {
+  emails: {
+    send(payload: {
+      from: string;
+      to: string;
+      subject: string;
+      html?: string;
+      text: string;
+    }): Promise<{
+      data: { id: string } | null;
+      error: { message: string; name: string } | null;
+    }>;
+  };
+}
+
+// Боевой адаптер Mailer поверх Resend. Логирует только факт отправки и (при
+// провале) причину ошибки — тело письма (в нём код входа) НЕ логируется.
+export class ResendMailer implements Mailer {
+  constructor(
+    private readonly client: ResendClientLike,
+    private readonly from: string, // уже собранная строка "Name <email>" или "email"
+    private readonly logger: Logger,
+  ) {}
+
+  async send(email: OutgoingEmail): Promise<void> {
+    const result = await this.client.emails.send({
+      from: this.from,
+      to: email.to,
+      subject: email.subject,
+      html: email.html,
+      text: email.text,
+    });
+    if (result.error) {
+      // Тело письма (код) НЕ логируем — только факт и причину ошибки.
+      this.logger.error(
+        { provider: 'resend', error: result.error.message, name: result.error.name },
+        'ошибка отправки письма',
+      );
+      throw new Error(`Resend send failed: ${result.error.message}`);
+    }
+    this.logger.info(
+      { provider: 'resend', to: email.to, subject: email.subject, emailId: result.data?.id },
+      'письмо отправлено (resend)',
+    );
+  }
+}
+
+// Фабрика для боевого пути: собирает реального клиента и строку from.
+export function createResendMailer(opts: {
+  apiKey: string;
+  fromEmail: string;
+  fromName?: string;
+  logger: Logger;
+}): Mailer {
+  const from = opts.fromName ? `${opts.fromName} <${opts.fromEmail}>` : opts.fromEmail;
+  return new ResendMailer(
+    new Resend(opts.apiKey) as unknown as ResendClientLike,
+    from,
+    opts.logger,
+  );
+}

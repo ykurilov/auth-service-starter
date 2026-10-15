@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.gitignore
+tests
+coverage
+docs
+*.md
+.env
+.env.*
+!.env.example
+.DS_Store

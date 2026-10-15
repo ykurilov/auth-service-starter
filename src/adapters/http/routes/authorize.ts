@@ -1,0 +1,539 @@
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { Logger } from 'pino';
+import { z } from 'zod';
+import type { Config } from '../../../config/config.js';
+import type { HttpDeps } from '../deps.js';
+import type { AuthorizationRequest } from '../../../domain/login/login-service.js';
+import { loginPage } from '../views/login-page.js';
+import { consentPage } from '../views/consent-page.js';
+import { errorPage } from '../views/error-page.js';
+import type { OidcParams } from '../views/oidc-params.js';
+import { setSsoCookie, readSsoCookie } from '../cookies.js';
+import { ensureCsrf, isSameOriginRequest, readCsrfCookie, verifyCsrf } from '../csrf.js';
+import { enforce, ipHash } from '../rate-limit.js';
+import { logSecurityEvent } from '../security-log.js';
+import { parseEmailAddress } from '../../../domain/identity/user.js';
+import { EmailOwnershipRequiredError } from '../../../domain/identity/identity-service.js';
+import type { ProviderIdentity } from '../../../domain/identity/provider-identity.js';
+import type { PendingLink } from '../../../domain/email-login/login-challenge.js';
+import { InvalidCredentialsError, InvalidEmailError } from '../../../domain/email-login/errors.js';
+import { EMAIL_PROVIDER } from '../../../domain/email-login/email-provider.js';
+import {
+  InvalidClientError,
+  InvalidRedirectUriError,
+  ProviderNotAllowedError,
+  UnsupportedPkceError,
+} from '../../../domain/login/errors.js';
+import { GOOGLE_PROVIDER } from '../../../domain/google-login/google-provider.js';
+import type { ValidatedAuthorization } from '../../../domain/login/login-service.js';
+
+const querySchema = z.object({
+  client_id: z.string().min(1),
+  redirect_uri: z.string().min(1),
+  response_type: z.string().optional(),
+  code_challenge: z.string().min(1),
+  code_challenge_method: z.string().min(1),
+  scope: z.string().default('openid'),
+  state: z.string().optional(),
+  nonce: z.string().optional(),
+  prompt: z.string().optional(),
+});
+
+// OIDC-параметры формы входа + CSRF. От него — конкретные схемы шагов.
+const formSchema = z.object({
+  client_id: z.string(),
+  redirect_uri: z.string(),
+  code_challenge: z.string(),
+  code_challenge_method: z.string(),
+  scope: z.string().default('openid'),
+  state: z.string().optional(),
+  nonce: z.string().optional(),
+  csrf: z.string(),
+});
+
+// Первый шаг «Получить код»: адрес почты (строгая проверка — в обработчике).
+const identifySchema = formSchema.extend({ email: z.string().min(1).max(320) });
+// Переотправка и проверка кода — в рамках попытки: её handle из скрытого поля.
+const codeRequestSchema = formSchema.extend({ challenge: z.string().min(1).max(200) });
+const codeVerifySchema = codeRequestSchema.extend({ code: z.string().min(1).max(32) });
+// Вход через Google: OIDC-параметры + ID Token (credential) от GIS-виджета.
+const googleSchema = formSchema.extend({ credential: z.string().min(1) });
+// Согласие (consent): только OIDC-параметры + CSRF.
+const confirmSchema = formSchema;
+
+export function redirectWithCode(
+  reply: FastifyReply,
+  redirectUri: string,
+  code: string,
+  state?: string,
+): FastifyReply {
+  return reply.redirect(authorizationCallbackUrl(redirectUri, code, state), 302);
+}
+
+function authorizationCallbackUrl(redirectUri: string, code: string, state?: string): string {
+  const url = new URL(redirectUri);
+  url.searchParams.set('code', code);
+  if (state !== undefined) url.searchParams.set('state', state);
+  return url.toString();
+}
+
+function wantsReplaceNavigation(req: FastifyRequest): boolean {
+  return req.headers['x-auth-navigation'] === 'replace';
+}
+
+function replaceNavigation(reply: FastifyReply, redirectTo: string): FastifyReply {
+  return reply.status(200).header('cache-control', 'no-store').send({ redirectTo });
+}
+
+export function toAuthorizationRequest(p: OidcParams): AuthorizationRequest {
+  return {
+    clientId: p.client_id,
+    redirectUri: p.redirect_uri,
+    codeChallenge: p.code_challenge,
+    codeChallengeMethod: p.code_challenge_method,
+    scope: p.scope,
+    state: p.state,
+    nonce: p.nonce,
+  };
+}
+
+export function html(reply: FastifyReply, status: number, body: string): FastifyReply {
+  return reply
+    .status(status)
+    .header('content-type', 'text/html; charset=utf-8')
+    .header('cache-control', 'no-store')
+    .send(body);
+}
+
+// Единая точка отказа для POST-форм входа: чужой origin или нет валидной
+// csrf-пары — нейтральная страница-ошибка, до любых обращений к хранилищам и
+// провайдерам. Значение csrf-cookie дальше служит привязкой к браузеру.
+function csrfGuard(req: FastifyRequest, reply: FastifyReply, config: Config, field: unknown): string | null {
+  const cookie = readCsrfCookie(req, config);
+  if (cookie !== null && isSameOriginRequest(req, config) && verifyCsrf(req, config, field)) return cookie;
+  html(reply, 400, errorPage('Некорректный запрос', 'Сессия формы истекла'));
+  return null;
+}
+
+// RFC 6749 §4.1.2.1: ошибка возвращается клиенту редиректом на redirect_uri.
+// error_description по спеке — только ASCII.
+export function redirectWithError(
+  reply: FastifyReply,
+  redirectUri: string,
+  error: string,
+  description: string,
+  state?: string,
+): FastifyReply {
+  const url = new URL(redirectUri);
+  url.searchParams.set('error', error);
+  url.searchParams.set('error_description', description);
+  if (state !== undefined) url.searchParams.set('state', state);
+  return reply.redirect(url.toString(), 302);
+}
+
+export function authorizeErrorPage(err: unknown, reply: FastifyReply, logger?: Logger): FastifyReply {
+  if (err instanceof InvalidClientError)
+    return html(reply, 400, errorPage('Некорректный запрос', 'Неизвестное приложение'));
+  if (err instanceof InvalidRedirectUriError)
+    return html(reply, 400, errorPage('Некорректный запрос', 'Недопустимый redirect_uri'));
+  // Не-доменная ошибка = сбой инфраструктуры: пользователю нейтральная
+  // страница, а причина — в лог, иначе сбой останется невидимым.
+  logger?.error({ err }, 'сбой в /authorize-флоу');
+  return html(reply, 500, errorPage('Ошибка сервера', 'Попробуйте позже'));
+}
+
+// Развилка ошибок /authorize. UnsupportedPkceError и ProviderNotAllowedError
+// бросаются только после проверки client_id + redirect_uri (порядок жёстко
+// задан в validateRequest/completeLogin), поэтому по спеке их положено
+// возвращать редиректом с error=, а не HTML-страницей — иначе OIDC-библиотеки
+// (openid-client, oidc-client-ts) виснут по таймауту вместо обработки ошибки.
+function authorizeError(
+  err: unknown,
+  reply: FastifyReply,
+  params: OidcParams,
+  logger?: Logger,
+): FastifyReply {
+  if (err instanceof UnsupportedPkceError)
+    return redirectWithError(
+      reply, params.redirect_uri, 'invalid_request', 'code_challenge_method must be S256', params.state,
+    );
+  if (err instanceof ProviderNotAllowedError)
+    return redirectWithError(
+      reply, params.redirect_uri, 'unauthorized_client', 'login method is not allowed for this client', params.state,
+    );
+  return authorizeErrorPage(err, reply, logger);
+}
+
+export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
+  const otp = deps.otpRateLimiter;
+
+  // Кнопка Google рендерится только когда провайдер собран (GOOGLE_CLIENT_ID
+  // задан) и клиент допущен к нему в allowedProviders. Вместе с кнопкой сервер
+  // выпускает одноразовый nonce, хранит его у себя (привязка к браузеру и
+  // клиенту) и гасит при входе — повтор того же id_token не пройдёт.
+  const googleFields = async (
+    validated: ValidatedAuthorization,
+    binding: string,
+  ): Promise<{ googleClientId?: string; googleNonce?: string }> => {
+    if (
+      !deps.googleProvider ||
+      !deps.googleNonces ||
+      !deps.config.googleClientId ||
+      !validated.client.allowedProviders.includes(GOOGLE_PROVIDER)
+    ) {
+      return {};
+    }
+    return {
+      googleClientId: deps.config.googleClientId,
+      googleNonce: await deps.googleNonces.issue(binding, validated.client.id),
+    };
+  };
+
+  // Первый экран входа (адрес почты и кнопка Google).
+  const identifyPage = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    params: OidcParams,
+    validated: ValidatedAuthorization,
+    extra: { email?: string; error?: string; notice?: string; status?: number } = {},
+  ): Promise<FastifyReply> => {
+    // Ограничиваем создание серверных nonce, включая повторные GET формы.
+    // В production общий Pg-счётчик сохраняет предел и при сбое Redis.
+    if (deps.googleProvider && deps.googleNonces && deps.config.googleClientId &&
+        validated.client.allowedProviders.includes(GOOGLE_PROVIDER) &&
+        !(await enforce(deps, reply, `google-nonce:${ipHash(req)}`,
+          deps.config.rateLimits.identifyPerIp, otp))) return reply;
+    const csrfToken = ensureCsrf(req, reply, deps.config);
+    return html(
+      reply,
+      extra.status ?? 200,
+      loginPage({
+        params,
+        csrfToken,
+        ...(extra.email !== undefined ? { email: extra.email } : {}),
+        ...(extra.error !== undefined ? { error: extra.error } : {}),
+        ...(extra.notice !== undefined ? { notice: extra.notice } : {}),
+        ...(await googleFields(validated, csrfToken)),
+      }),
+    );
+  };
+
+  const codePage = (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    params: OidcParams,
+    input: { email: string; challenge: string; error?: string; notice?: string },
+  ): FastifyReply =>
+    html(
+      reply,
+      200,
+      loginPage({ params, mode: 'code', csrfToken: ensureCsrf(req, reply, deps.config), ...input }),
+    );
+
+  // Глобальная SSO-cookie может быть выпущена способом входа, который не
+  // разрешён конкретному клиенту. Такая сессия по-прежнему пригодна для
+  // других приложений, но для текущего клиента равносильна отсутствующей.
+  // Живая сессия скользяще продлевается в хранилище — продлеваем и cookie,
+  // иначе браузер выбросил бы её по старому Max-Age раньше сессии.
+  const resolveCompatibleSsoSession = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    validated: ValidatedAuthorization,
+  ) => {
+    const token = readSsoCookie(req, deps.config);
+    const session = token ? await deps.sso.resolve(token) : null;
+    if (session && token) setSsoCookie(reply, deps.config, token);
+    return session && validated.client.allowedProviders.includes(session.auth.provider)
+      ? session
+      : null;
+  };
+
+  // Бюджеты отправки кода (Postgres-лимитер): источник на все адреса, источник
+  // на адрес, адрес за час и за сутки (бюджет аккаунта против ротации IP).
+  const enforceSendBudget = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    email: string,
+  ): Promise<boolean> => {
+    const r = deps.config.rateLimits;
+    const ip = ipHash(req);
+    return (
+      (await enforce(deps, reply, `code-req-ip:${ip}`, r.codeRequestPerIp, otp)) &&
+      (await enforce(deps, reply, `code-req:${ip}:${email}`, r.codeRequest, otp)) &&
+      (await enforce(deps, reply, `code-req-email:${email}`, r.codeRequestPerEmail, otp)) &&
+      (await enforce(deps, reply, `code-req-email-day:${email}`, r.codeRequestPerEmailDaily, otp))
+    );
+  };
+
+  // Новая попытка входа по коду и экран ввода. Наличие аккаунта не раскрываем:
+  // код уходит на любой корректный адрес, аккаунт заводится при верном коде.
+  const startCodeLogin = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    params: OidcParams,
+    validated: ValidatedAuthorization,
+    binding: string,
+    rawEmail: string,
+    link?: PendingLink,
+    notice?: string,
+  ): Promise<FastifyReply> => {
+    const email = parseEmailAddress(rawEmail);
+    if (!email)
+      return identifyPage(req, reply, params, validated, {
+        email: rawEmail,
+        error: 'Проверьте адрес почты',
+        status: 400,
+      });
+    if (!(await enforceSendBudget(req, reply, email))) return reply;
+    let started;
+    try {
+      started = await deps.codeProvider.start({ email, binding, ...(link ? { link } : {}) });
+    } catch (err) {
+      if (err instanceof InvalidEmailError)
+        return identifyPage(req, reply, params, validated, { email: rawEmail, error: 'Проверьте адрес почты', status: 400 });
+      throw err;
+    }
+    return codePage(req, reply, params, {
+      email: started.email,
+      challenge: started.handle,
+      ...(notice ? { notice } : {}),
+    });
+  };
+
+  app.get('/authorize', async (req, reply) => {
+    const parsed = querySchema.safeParse(req.query);
+    if (!parsed.success)
+      return html(reply, 400, errorPage('Некорректный запрос', 'Отсутствуют обязательные параметры'));
+    // prompt и response_type — управляющие флаги, не часть OIDC-параметров
+    // и не попадают в hiddenFields.
+    const { prompt, response_type, ...oidc } = parsed.data;
+    const params: OidcParams = oidc;
+    let validated;
+    try {
+      validated = await deps.login.validateRequest(toAuthorizationRequest(params));
+    } catch (err) {
+      return authorizeError(err, reply, params, deps.logger);
+    }
+    // Discovery заявляет только code; иной response_type — протокольная ошибка
+    // редиректом (redirect_uri к этому моменту уже проверен).
+    if (response_type !== undefined && response_type !== 'code')
+      return redirectWithError(
+        reply, params.redirect_uri, 'unsupported_response_type', 'only response_type=code is supported', params.state,
+      );
+    if (prompt === 'login') return identifyPage(req, reply, params, validated);
+    const session = await resolveCompatibleSsoSession(req, reply, validated);
+    if (prompt === 'none') {
+      // OIDC Core §3.1.2.1: prompt=none — никакого UI. Живая SSO-сессия есть —
+      // тихо выдаём код (silent renew), нет — login_required редиректом.
+      if (!session)
+        return redirectWithError(
+          reply, params.redirect_uri, 'login_required', 'no active session', params.state,
+        );
+      // Внешнее (независимо управляемое) приложение не получает профиль без
+      // явного согласия пользователя: сохранённых согласий сервис не ведёт,
+      // поэтому тихий вход для external всегда отвечает consent_required, и
+      // приложение показывает обычный вход с экраном «Продолжить как …».
+      if (validated.client.type === 'external')
+        return redirectWithError(
+          reply, params.redirect_uri, 'consent_required', 'user consent is required', params.state,
+        );
+      try {
+        const code = await deps.login.completeSsoLogin(validated, session.userId, session.auth);
+        return redirectWithCode(reply, params.redirect_uri, code, params.state);
+      } catch (err) {
+        return authorizeError(err, reply, params, deps.logger);
+      }
+    }
+    if (session) {
+      const csrfToken = ensureCsrf(req, reply, deps.config);
+      return html(reply, 200, consentPage({ params, email: session.auth.email ?? '', csrfToken }));
+    }
+    return identifyPage(req, reply, params, validated);
+  });
+
+  // Вход через Google: страница прислала ID Token из Google Identity Services.
+  // Проверка подписи/audience и гашение nonce — в провайдере.
+  app.post('/authorize/google', async (req, reply) => {
+    const google = deps.googleProvider;
+    if (!google)
+      return html(reply, 400, errorPage('Вход недоступен', 'Вход через Google не настроен'));
+    const parsed = googleSchema.safeParse(req.body);
+    if (!parsed.success)
+      return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
+    const { csrf, credential, ...rest } = parsed.data;
+    const params: OidcParams = rest;
+    const binding = csrfGuard(req, reply, deps.config, csrf);
+    if (binding === null) return;
+    if (!(await enforce(deps, reply, `google:${ipHash(req)}`, deps.config.rateLimits.identifyPerIp)))
+      return;
+    let validated;
+    try {
+      validated = await deps.login.validateRequest(toAuthorizationRequest(params));
+    } catch (err) {
+      return authorizeError(err, reply, params, deps.logger);
+    }
+    let pid: ProviderIdentity;
+    try {
+      pid = await google.verify({ credential, binding, clientId: validated.client.id });
+    } catch (err) {
+      if (!(err instanceof InvalidCredentialsError)) return authorizeError(err, reply, params, deps.logger);
+      logSecurityEvent(deps.logger, req, 'login_failed', { method: 'google' });
+      return identifyPage(req, reply, params, validated, {
+        error: 'Не удалось войти через Google, попробуйте ещё раз',
+      });
+    }
+    try {
+      const { code, userId, auth } = await deps.login.completeLogin(validated, pid);
+      const { rawToken } = await deps.sso.start(userId, auth);
+      setSsoCookie(reply, deps.config, rawToken);
+      return redirectWithCode(reply, params.redirect_uri, code, params.state);
+    } catch (err) {
+      if (!(err instanceof EmailOwnershipRequiredError)) return authorizeError(err, reply, params, deps.logger);
+      // Google не доказывает владение этим (сторонним) адресом: ни создавать
+      // по нему пользователя, ни присоединять к существующему нельзя. Владелец
+      // подтверждает адрес кодом из письма; после верного кода эта Google-
+      // личность привяжется, и дальше вход через Google будет работать сразу.
+      return startCodeLogin(
+        req, reply, params, validated, binding, err.email,
+        { provider: pid.provider, subject: pid.subject, ...(pid.profile.name ? { name: pid.profile.name } : {}) },
+        'Google не подтверждает, что этот адрес принадлежит вам. Введите код из письма — после этого вход через Google будет привязан.',
+      );
+    }
+  });
+
+  // Шаг «Получить код»: единственный способ входа по почте — код из письма.
+  app.post('/authorize/identify', async (req, reply) => {
+    const parsed = identifySchema.safeParse(req.body);
+    if (!parsed.success)
+      return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
+    const { csrf, email, ...rest } = parsed.data;
+    const params: OidcParams = rest;
+    const binding = csrfGuard(req, reply, deps.config, csrf);
+    if (binding === null) return;
+    let validated;
+    try {
+      validated = await deps.login.validateRequest(toAuthorizationRequest(params));
+    } catch (err) {
+      return authorizeError(err, reply, params, deps.logger);
+    }
+    if (!validated.client.allowedProviders.includes(EMAIL_PROVIDER))
+      return redirectWithError(
+        reply, params.redirect_uri, 'unauthorized_client', 'login method is not allowed for this client', params.state,
+      );
+    return startCodeLogin(req, reply, params, validated, binding, email);
+  });
+
+  // Повторная отправка кода в рамках той же попытки (атомарная замена кода).
+  app.post('/authorize/code/request', async (req, reply) => {
+    const parsed = codeRequestSchema.safeParse(req.body);
+    if (!parsed.success)
+      return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
+    const { csrf, challenge, ...rest } = parsed.data;
+    const params: OidcParams = rest;
+    const binding = csrfGuard(req, reply, deps.config, csrf);
+    if (binding === null) return;
+    let validated;
+    try {
+      validated = await deps.login.validateRequest(toAuthorizationRequest(params));
+    } catch (err) {
+      return authorizeError(err, reply, params, deps.logger);
+    }
+    const view = await deps.codeProvider.describe({ handle: challenge, binding });
+    if (!view)
+      return identifyPage(req, reply, params, validated, {
+        error: 'Код истёк или попытки закончились — запросите новый код',
+      });
+    if (!(await enforceSendBudget(req, reply, view.email))) return reply;
+    const resent = await deps.codeProvider.resend({ handle: challenge, binding });
+    if (!resent)
+      return identifyPage(req, reply, params, validated, {
+        email: view.email,
+        error: 'Больше отправить код в этой попытке нельзя — начните вход заново',
+      });
+    return codePage(req, reply, params, { email: resent.email, challenge, notice: 'Отправили новый код' });
+  });
+
+  app.post('/authorize/code/verify', async (req, reply) => {
+    const parsed = codeVerifySchema.safeParse(req.body);
+    if (!parsed.success)
+      return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
+    const { csrf, challenge, code, ...rest } = parsed.data;
+    const params: OidcParams = rest;
+    const binding = csrfGuard(req, reply, deps.config, csrf);
+    if (binding === null) return;
+    // Общий бюджет проверок одного источника на все попытки и адреса. Лимит
+    // каждой попытки (5 проверок) — в её записи; лимита по адресу нет, чтобы
+    // посторонний не мог заблокировать вход владельцу.
+    if (!(await enforce(deps, reply, `code-vrf-ip:${ipHash(req)}`, deps.config.rateLimits.codeVerifyPerIp, otp)))
+      return;
+    let validated;
+    try {
+      validated = await deps.login.validateRequest(toAuthorizationRequest(params));
+    } catch (err) {
+      return authorizeError(err, reply, params, deps.logger);
+    }
+    try {
+      const verified = await deps.codeProvider.verifyChallenge({ handle: challenge, binding, code });
+      // Попытка начата входом через Google со сторонним адресом: код доказал
+      // владение — входим этой Google-личностью, IdentityService привяжет её
+      // к владельцу адреса (или создаст его).
+      const pid: ProviderIdentity = verified.link
+        ? {
+            provider: verified.link.provider,
+            subject: verified.link.subject,
+            email: verified.identity.email,
+            emailVerified: true,
+            profile: verified.link.name ? { name: verified.link.name } : {},
+          }
+        : verified.identity;
+      const { code: issued, userId, auth } = await deps.login.completeLogin(validated, pid);
+      const { rawToken } = await deps.sso.start(userId, auth);
+      setSsoCookie(reply, deps.config, rawToken);
+      if (wantsReplaceNavigation(req))
+        return replaceNavigation(
+          reply,
+          authorizationCallbackUrl(params.redirect_uri, issued, params.state),
+        );
+      return redirectWithCode(reply, params.redirect_uri, issued, params.state);
+    } catch (err) {
+      if (!(err instanceof InvalidCredentialsError)) return authorizeError(err, reply, params, deps.logger);
+      const view = await deps.codeProvider.describe({ handle: challenge, binding });
+      logSecurityEvent(deps.logger, req, 'login_failed', {
+        method: 'email_code',
+        ...(view ? { email: view.email } : {}),
+      });
+      const message =
+        view && view.attemptsLeft > 0
+          ? 'Неверный или просроченный код'
+          : 'Код истёк или попытки закончились — запросите новый код';
+      if (wantsReplaceNavigation(req))
+        return reply.status(401).header('cache-control', 'no-store').send({ error: message });
+      if (!view || view.attemptsLeft <= 0)
+        return identifyPage(req, reply, params, validated, { ...(view ? { email: view.email } : {}), error: message });
+      return codePage(req, reply, params, { email: view.email, challenge, error: message });
+    }
+  });
+
+  app.post('/authorize/confirm', async (req, reply) => {
+    const parsed = confirmSchema.safeParse(req.body);
+    if (!parsed.success)
+      return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
+    const { csrf, ...rest } = parsed.data;
+    const params: OidcParams = rest;
+    if (csrfGuard(req, reply, deps.config, csrf) === null) return;
+    let validated;
+    try {
+      validated = await deps.login.validateRequest(toAuthorizationRequest(params));
+    } catch (err) {
+      return authorizeError(err, reply, params, deps.logger);
+    }
+    const session = await resolveCompatibleSsoSession(req, reply, validated);
+    if (!session) return identifyPage(req, reply, params, validated);
+    try {
+      const code = await deps.login.completeSsoLogin(validated, session.userId, session.auth);
+      return redirectWithCode(reply, params.redirect_uri, code, params.state);
+    } catch (err) {
+      return authorizeError(err, reply, params, deps.logger);
+    }
+  });
+}

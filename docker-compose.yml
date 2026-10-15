@@ -1,0 +1,55 @@
+# Публичный HTTPS завершает nginx на хосте. База и Redis наружу не публикуются.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://authv3:${POSTGRES_PASSWORD:?Run npm run setup and configure .env}@postgres:5432/authv3
+      REDIS_URL: redis://redis:6379
+      PORT: "3016"
+      TRUST_PROXY: ${TRUST_PROXY:-loopback,172.30.240.1}
+    ports:
+      - "127.0.0.1:${HOST_PORT:-3016}:3016"
+    networks: [auth]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: authv3
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: authv3
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [auth]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authv3 -d authv3"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redisdata:/data
+    networks: [auth]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+networks:
+  auth:
+    ipam:
+      config:
+        - subnet: ${DOCKER_SUBNET:-172.30.240.0/24}
+          gateway: ${DOCKER_GATEWAY:-172.30.240.1}
+volumes:
+  pgdata:
+  redisdata:
