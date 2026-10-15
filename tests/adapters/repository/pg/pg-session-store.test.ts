@@ -206,4 +206,20 @@ describe('PgSessionStore на pg-mem', () => {
     expect((await store.findById(other.id))?.revokedAt).toBeNull();
   });
 
+  it('revokeForUser гасит сессии пользователя во всех клиентах, не трогая чужие и прежние отзывы', async () => {
+    const out = '00000000-0000-4000-8000-0000000000aa';
+    const stay = '00000000-0000-4000-8000-0000000000bb';
+    const mine = makeSession({ userId: out });
+    const mineOther = makeSession({ userId: out, clientId: 'other' });
+    const already = makeSession({ userId: out, revokedAt: new Date('2026-01-02T00:00:00Z') });
+    const stranger = makeSession({ userId: stay });
+    for (const session of [mine, mineOther, already, stranger]) await store.save(session);
+    const at = new Date('2026-01-03T00:00:00Z');
+    await store.revokeForUser(out, at);
+    expect((await store.findById(mine.id))?.revokedAt).toEqual(at);
+    expect((await store.findById(mineOther.id))?.revokedAt).toEqual(at);
+    expect((await store.findById(already.id))?.revokedAt).toEqual(already.revokedAt);
+    expect((await store.findById(stranger.id))?.revokedAt).toBeNull();
+  });
+
 });

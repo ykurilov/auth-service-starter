@@ -23,3 +23,18 @@ export function hiddenFields(p: OidcParams): string {
     f('nonce', p.nonce),
   ].join('');
 }
+
+// GET /authorize с теми же OIDC-параметрами. promptLogin — сразу экран ввода
+// почты: SSO-cookie не уведёт на экран согласия.
+export function authorizeUrl(p: OidcParams, promptLogin = false): string {
+  const q = new URLSearchParams();
+  q.set('client_id', p.client_id);
+  q.set('redirect_uri', p.redirect_uri);
+  q.set('code_challenge', p.code_challenge);
+  q.set('code_challenge_method', p.code_challenge_method);
+  q.set('scope', p.scope);
+  if (p.state !== undefined) q.set('state', p.state);
+  if (p.nonce !== undefined) q.set('nonce', p.nonce);
+  if (promptLogin) q.set('prompt', 'login');
+  return `/authorize?${q.toString()}`;
+}

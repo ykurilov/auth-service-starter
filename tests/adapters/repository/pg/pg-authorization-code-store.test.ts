@@ -7,6 +7,9 @@ import { runMigrations } from '../../../../src/adapters/db/migrate.js';
 import type { Db } from '../../../../src/adapters/db/pool.js';
 import type { AuthorizationCodeRecord } from '../../../../src/domain/login/authorization-code.js';
 import { PgAuthorizationCodeStore } from '../../../../src/adapters/repository/pg/pg-authorization-code-store.js';
+import { PgClientRegistry } from '../../../../src/adapters/repository/pg/pg-client-registry.js';
+
+const CLIENT = { id: 'app-1', type: 'internal' as const, redirectUris: ['https://app.example/callback'], allowedProviders: ['google'] };
 
 const migrationsDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -20,6 +23,7 @@ function makeRecord(
     id: randomUUID(),
     codeHash: `hash-${randomUUID()}`,
     clientId: 'app-1',
+    clientType: 'internal',
     userId: randomUUID(),
     redirectUri: 'https://app.example/callback',
     codeChallenge: 'challenge-abc',
@@ -45,6 +49,7 @@ describe('PgAuthorizationCodeStore на pg-mem', () => {
     db = createMemDb();
     await runMigrations(db, migrationsDir);
     store = new PgAuthorizationCodeStore(db);
+    await new PgClientRegistry(db).create(CLIENT);
   });
 
   afterEach(async () => {
@@ -96,6 +101,23 @@ describe('PgAuthorizationCodeStore на pg-mem', () => {
       new Date('2026-01-01T00:00:00.000Z'),
     );
     expect(found).toBeNull();
+  });
+
+  it('код привязан к регистрации клиента: после удаления и повторного создания с тем же id не находится', async () => {
+    const registry = new PgClientRegistry(db);
+    const before = makeRecord();
+    await store.save(before);
+    await registry.delete(CLIENT.id);
+    const orphan = makeRecord();
+    await store.save(orphan);
+    await registry.create(CLIENT);
+    const fresh = makeRecord();
+    await store.save(fresh);
+
+    const now = new Date('2026-01-01T00:00:00.000Z');
+    expect(await store.findActiveByHash(before.codeHash, now)).toBeNull();
+    expect(await store.findActiveByHash(orphan.codeHash, now)).toBeNull();
+    expect(await store.findActiveByHash(fresh.codeHash, now)).toEqual(fresh);
   });
 
   it('неизвестный hash -> null', async () => {

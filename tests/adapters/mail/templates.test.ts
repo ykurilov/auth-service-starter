@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { escapeHtml, buildLoginCodeEmail } from '../../../src/adapters/mail/templates.js';
+import { escapeHtml, buildLoginCodeEmail, buildGoogleLinkCodeEmail } from '../../../src/adapters/mail/templates.js';
 
 describe('escapeHtml', () => {
   it('экранирует все 5 спецсимволов', () => {
@@ -49,5 +49,35 @@ describe('buildLoginCodeEmail', () => {
     expect(email.html).not.toContain('<script>');
     expect(email.html).toContain('&lt;script&gt;');
     expect(email.html).toContain('Acme &amp; &lt;Co&gt;');
+  });
+});
+
+describe('buildGoogleLinkCodeEmail (R20)', () => {
+  const opts = { to: 'boss@corp.example', code: '123456', ttlMinutes: 15, appName: 'Auth Service', googleName: 'Иван <script>' };
+
+  it('тема и текст говорят о привязке Google-аккаунта, а не об обычном входе', () => {
+    const email = buildGoogleLinkCodeEmail(opts);
+    expect(email.subject).toBe('123456 — код для привязки Google-аккаунта к «Auth Service»');
+    expect(email.subject).not.toBe(buildLoginCodeEmail(opts).subject);
+    expect(email.text).toContain('привяз');
+    expect(email.text).toContain('Google');
+    expect(email.text).toContain('Иван <script>');
+    expect(email.text).toContain('без кода');
+    expect(email.text).toContain('Никому не сообщайте');
+    expect(email.text).toContain('123456');
+  });
+
+  it('html содержит код и экранирует имя из Google', () => {
+    const email = buildGoogleLinkCodeEmail(opts);
+    expect(email.html).toContain('123456');
+    expect(email.html).toContain('Иван &lt;script&gt;');
+    expect(email.html).not.toContain('<script>');
+  });
+
+  it('без имени в Google письмо тоже понятное', () => {
+    const { googleName: _, ...rest } = opts;
+    const email = buildGoogleLinkCodeEmail(rest);
+    expect(email.text).toContain('Google-аккаунт');
+    expect(email.text).not.toContain('undefined');
   });
 });

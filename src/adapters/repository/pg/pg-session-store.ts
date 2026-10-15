@@ -107,6 +107,13 @@ export class PgSessionStore implements SessionStore {
     );
   }
 
+  async revokeForUser(userId: string, at: Date): Promise<void> {
+    await this.db.query(
+      'update sessions set revoked_at = $2 where user_id = $1 and revoked_at is null',
+      [userId, at],
+    );
+  }
+
   async findActiveByUser(userId: string, now: Date): Promise<Session[]> {
     const { rows } = await this.db.query<SessionRow>(
       `select ${SELECT_COLUMNS}

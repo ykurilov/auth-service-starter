@@ -6,7 +6,7 @@ import { runMigrations } from '../../../src/adapters/db/migrate.js';
 import type { Db } from '../../../src/adapters/db/pool.js';
 import type { StoredSigningKey } from '../../../src/domain/tokens/signing-key-store.js';
 import { PgSigningKeyStore } from '../../../src/adapters/repository/pg/pg-signing-key-store.js';
-import { runRotate, runRevoke } from '../../../src/adapters/db/rotate-key.js';
+import { describeRotation, runRotate, runRevoke } from '../../../src/adapters/db/rotate-key.js';
 
 const migrationsDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -57,15 +57,17 @@ describe('runRotate на pg-mem', () => {
     expect(fresh?.status).toBe('active');
 
     expect((await store.getActive())?.kid).toBe(result.newKid);
-    expect(result.retiredCount).toBe(1);
+    expect(result.retiredKids).toEqual(['a']);
+    expect(describeRotation(result)).toBe(`Новый активный ключ: ${result.newKid}; отправлены в retired: a`);
   });
 
-  it('на пустой БД создаёт первый active, retiredCount === 0', async () => {
+  it('на пустой БД создаёт первый active, в retired никого', async () => {
     const store = new PgSigningKeyStore(db);
 
     const result = await runRotate(db, new Date('2026-03-01T00:00:00.000Z'));
 
-    expect(result.retiredCount).toBe(0);
+    expect(result.retiredKids).toEqual([]);
+    expect(describeRotation(result)).toBe(`Новый активный ключ: ${result.newKid}; отправлены в retired: нет`);
     const active = await store.getActive();
     expect(active?.kid).toBe(result.newKid);
     expect(await store.listAll()).toHaveLength(1);

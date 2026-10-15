@@ -107,3 +107,24 @@ describe('LoginService.completeLogin', () => {
     await expect(login.completeLogin(v, googlePid)).rejects.toBeInstanceOf(ProviderNotAllowedError);
   });
 });
+
+describe('LoginService.completeLogin: снимок адреса из базы (R01)', () => {
+  it('адрес занят другим пользователем → в коде и снимке прежний подтверждённый адрес', async () => {
+    const { login, codes } = make();
+    const googleClient = { ...client, allowedProviders: ['email', 'google'] };
+    const validated = { client: googleClient, request: req };
+    await login.completeLogin(validated, { ...emailPid, subject: 'code:v@corp.example', email: 'v@corp.example' });
+    const first = await login.completeLogin(validated, {
+      provider: 'google', subject: 'g-a', email: 'a@corp.example', emailVerified: true, profile: {},
+    });
+    const again = await login.completeLogin(validated, {
+      provider: 'google', subject: 'g-a', email: 'v@corp.example', emailVerified: true, profile: {},
+    });
+    expect(again.userId).toBe(first.userId);
+    expect(again.auth).toMatchObject({ email: 'a@corp.example', emailVerified: true });
+    const grant = await codes.redeem({
+      code: again.code, clientId: 'app1', redirectUri: 'https://app1/cb', codeVerifier: 'verifier-1234567890-достаточно',
+    });
+    expect(grant.auth).toMatchObject({ email: 'a@corp.example', emailVerified: true });
+  });
+});

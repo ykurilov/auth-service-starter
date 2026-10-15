@@ -9,6 +9,7 @@ function rec(over: Partial<AuthorizationCodeRecord> = {}): AuthorizationCodeReco
     id: over.id ?? 'id-1',
     codeHash: over.codeHash ?? 'hash',
     clientId: over.clientId ?? 'app1',
+    clientType: over.clientType ?? 'internal',
     userId: over.userId ?? 'u1',
     redirectUri: over.redirectUri ?? 'https://app1/cb',
     codeChallenge: over.codeChallenge ?? 'chal',

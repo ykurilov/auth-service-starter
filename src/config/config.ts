@@ -205,7 +205,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       // источника на все адреса; по email за час и за сутки — бюджет аккаунта
       // против ротации IP. Каждая отправка — новая попытка не более чем с 5
       // проверками, так что на один адрес за сутки — не больше 20×5 догадок.
-      codeRequest: { limit: 3, windowSeconds: 900 },
+      // По (ip+email) за 15 минут: первая отправка и 3 повторные в попытке.
+      codeRequest: { limit: 4, windowSeconds: 900 },
       codeRequestPerIp: { limit: 20, windowSeconds: 3600 },
       codeRequestPerEmail: { limit: 5, windowSeconds: 3600 },
       codeRequestPerEmailDaily: { limit: 20, windowSeconds: 86400 },

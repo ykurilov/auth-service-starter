@@ -112,4 +112,24 @@ describe('EmailCodeProvider', () => {
   it('verify с кривым credential бросает', async () => {
     await expect(make().provider.verify({ email: 'a@b.com' })).rejects.toBeTruthy();
   });
+
+  it('R20: попытка привязки Google — письмо о привязке, и при повторной отправке тоже', async () => {
+    const { mailer, provider } = make(['111111', '222222']);
+    const { handle } = await provider.start({
+      email: 'boss@corp.example',
+      binding: 'b',
+      link: { provider: 'google', subject: 'g-1', name: 'Boss' },
+    });
+    expect(mailer.last?.subject).toContain('привязки Google-аккаунта');
+    expect(mailer.last?.text).toContain('Boss');
+    await provider.resend({ handle, binding: 'b' });
+    expect(mailer.last?.subject).toContain('привязки Google-аккаунта');
+    expect(mailer.last?.text).toContain('222222');
+  });
+
+  it('R20: обычная попытка — обычное письмо входа', async () => {
+    const { mailer, provider } = make();
+    await provider.start({ email: 'a@b.com', binding: 'b' });
+    expect(mailer.last?.subject).toContain('код для входа');
+  });
 });

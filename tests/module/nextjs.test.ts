@@ -1,10 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createAuthMiddleware } from '../../module/server/nextjs.js';
 import { seal, unseal } from '../../module/server/core/cookie-seal.js';
-import { SESSION_COOKIE, parseCookies } from '../../module/server/cookies.js';
+import { parseCookies } from '../../module/server/cookies.js';
+import { getUser, silentCheckDone } from '../../module/server/server.js';
+import { cookieNamesFor } from './helpers.js';
 
 const SECRET = 'секрет-достаточной-длины-32-символа-минимум-1';
 const env = { AUTH_URL: 'https://auth.test', AUTH_APP_URL: 'https://app.test', AUTH_COOKIE_SECRET: SECRET };
+const SESSION_COOKIE = cookieNamesFor(env).session;
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const b64 = (o: unknown) =>
@@ -99,6 +102,20 @@ describe('createAuthMiddleware', () => {
     const res = await mw(new Request('https://app.test/public', { headers: { cookie } }), pass);
     expect(res.status).toBe(200);
     expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toContain('Max-Age=0');
+  });
+
+  it('временный сбой refresh на публичной SSR-странице: cookie не вырезается, тихий вход не запускается', async () => {
+    const fetchImpl = (async () => Response.json({ error: 'server_error' }, { status: 503 })) as typeof fetch;
+    const mw = createAuthMiddleware({ env, fetch: fetchImpl, protect: ['/dashboard'] });
+    const cookie = await sessionCookie(-1000);
+    const res = await mw(new Request('https://app.test/public', { headers: { cookie } }),
+      (headers) => { const r = new Response(null); r.headers.set('x-middleware-request-cookie', headers.get('cookie') ?? ''); r.headers.set('x-middleware-override-headers', 'cookie'); return r; });
+    expect(setCookies(res)).toEqual([]);
+    const forwarded = res.headers.get('x-middleware-request-cookie')!;
+    expect(forwarded).toContain(cookie);
+    expect(await getUser(forwarded, { env })).toBeNull();
+    // Страница по образцу из README не уводит на /api/auth/login?silent=1.
+    expect(silentCheckDone(forwarded, new URLSearchParams(), { env })).toBe(true);
   });
 
   it('нет сессии на protect-пути -> редирект на login', async () => {

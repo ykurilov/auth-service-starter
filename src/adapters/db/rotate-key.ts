@@ -4,7 +4,8 @@ import { generateSigningKeyPem } from '../../domain/tokens/signing-key.js';
 
 export interface RotateResult {
   newKid: string;
-  retiredCount: number;
+  // kid прежних active-ключей: их передают в revoke-key при утечке.
+  retiredKids: string[];
 }
 
 // Генерирует новую пару, делает её active, прежние active → retired
@@ -12,14 +13,18 @@ export interface RotateResult {
 // тестируемости (в CLI — new Date()).
 export async function runRotate(db: Db, now: Date): Promise<RotateResult> {
   const store = new PgSigningKeyStore(db);
-  const before = await store.listAll();
-  const retiredCount = before.filter((k) => k.status === 'active').length;
   const gen = await generateSigningKeyPem();
-  await store.rotate(
+  const retiredKids = await store.rotate(
     { ...gen, status: 'active', createdAt: now, retiredAt: null, revokedAt: null },
     now,
   );
-  return { newKid: gen.kid, retiredCount };
+  return { newKid: gen.kid, retiredKids };
+}
+
+// Строка отчёта rotate-key для оператора.
+export function describeRotation(result: RotateResult): string {
+  const retired = result.retiredKids.length ? result.retiredKids.join(', ') : 'нет';
+  return `Новый активный ключ: ${result.newKid}; отправлены в retired: ${retired}`;
 }
 
 // Аварийный отзыв скомпрометированного ключа: помечает его revoked_at, после

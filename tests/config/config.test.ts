@@ -25,6 +25,11 @@ describe('loadConfig', () => {
     expect(() => loadConfig({} as NodeJS.ProcessEnv)).toThrow();
   });
 
+  it('R11: лимит отправки кода вмещает первую отправку и 3 повторные', () => {
+    const cfg = loadConfig({ PUBLIC_ISSUER_URL: 'https://auth.example.com' } as NodeJS.ProcessEnv);
+    expect(cfg.rateLimits.codeRequest.limit).toBeGreaterThanOrEqual(4);
+  });
+
   it('refreshTtlSeconds по умолчанию 30 дней', () => {
     const cfg = loadConfig({
       PUBLIC_ISSUER_URL: 'https://auth.example.com',

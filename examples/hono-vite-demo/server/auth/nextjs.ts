@@ -1,4 +1,4 @@
-import { SESSION_COOKIE, cookieName, isSecureAppUrl, parseCookies } from './cookies.js';
+import { authCookieNames, parseCookies } from './cookies.js';
 import { loadModuleConfig } from './core/config.js';
 import { createSessionGuard, type GuardOptions } from './session-guard.js';
 
@@ -15,7 +15,7 @@ export type MiddlewareOptions = GuardOptions;
 export function createAuthMiddleware(options: MiddlewareOptions = {}) {
   const check = createSessionGuard(options);
   const config = loadModuleConfig(options);
-  const sessionName = cookieName(SESSION_COOKIE, isSecureAppUrl(config.appUrl));
+  const names = authCookieNames(config.clientId, config.appUrl);
 
   return async function middleware(request: Request, next: NextHandler): Promise<Response> {
     const decision = await check(request);
@@ -30,9 +30,14 @@ export function createAuthMiddleware(options: MiddlewareOptions = {}) {
       if (/Max-Age=0(?:;|$)/i.test(line)) delete cookies[name];
       else cookies[name] = pair.slice(idx + 1);
     }
-    // На публичной странице временный сбой при истёкшем access сохраняет
-    // браузерную cookie для retry, но текущий SSR-запрос идёт анонимно.
-    if (!decision.user && !new URL(request.url).pathname.startsWith('/api/auth/')) delete cookies[sessionName];
+    // Без пользователя SSR-запрос идёт анонимно. Временный сбой refresh на
+    // публичной странице cookie не вырезает, а помечает запрос «тихая проверка
+    // сделана»: страница по образцу из README покажет «Войти», а не уйдёт на
+    // login?silent=1, который упрётся в тот же сбой. Браузер метку не получает.
+    if (!decision.user && !new URL(request.url).pathname.startsWith('/api/auth/')) {
+      if (decision.unavailable) cookies[names.silentCheck] = '1';
+      else delete cookies[names.session];
+    }
     headers.set('cookie', Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; '));
     const res = next(headers);
     // Совместимость с прежним () => NextResponse.next(): используем тот же

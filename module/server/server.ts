@@ -1,6 +1,6 @@
-import { loadModuleConfig, type LoadConfigOptions } from './core/config.js';
+import { loadAppIdentity, loadModuleConfig, type LoadConfigOptions } from './core/config.js';
 import { unseal } from './core/cookie-seal.js';
-import { parseCookies, SESSION_COOKIE, SILENT_CHECK_COOKIE, SILENT_CHECK_PARAM, cookieName, isSecureAppUrl } from './cookies.js';
+import { parseCookies, SILENT_CHECK_PARAM, authCookieNames } from './cookies.js';
 import { isSessionData, type SessionUser } from './core/session-data.js';
 
 // Для серверных компонентов: только читаем cookie (middleware держит её свежей).
@@ -11,7 +11,7 @@ export async function getUser(
 ): Promise<SessionUser | null> {
   const config = loadModuleConfig(options);
   const cookies = parseCookies(cookieHeader);
-  const sealed = cookies[cookieName(SESSION_COOKIE, isSecureAppUrl(config.appUrl))];
+  const sealed = cookies[authCookieNames(config.clientId, config.appUrl).session];
   if (!sealed) return null;
   const data = await unseal(sealed, config.cookieSecret);
   return isSessionData(data) && data.accessTokenExpiresAt > Date.now() ? data.user : null;
@@ -27,10 +27,16 @@ export function silentCheckDone(
   searchParams?: URLSearchParams | Record<string, string | string[] | undefined>,
   options: LoadConfigOptions = {},
 ): boolean {
-  // Без конфигурации используем безопасное HTTPS-имя; localhost передаёт options.
-  const appUrl = options.env?.AUTH_APP_URL ?? (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.AUTH_APP_URL;
-  const name = cookieName(SILENT_CHECK_COOKIE, appUrl ? isSecureAppUrl(appUrl) : true);
-  if (parseCookies(cookieHeader)[name] !== undefined) return true;
+  // Имя метки зависит от адреса приложения и client_id; секрет не нужен.
+  // Без AUTH_APP_URL страница не падает: признаём метку с любым client id.
+  // Ошибиться так можно только в сторону «проверка была» — пропустить один
+  // тихий вход, но не уйти в круг редиректов. Сами обработчики входа без
+  // AUTH_APP_URL не создаются, так что ошибка конфигурации видна сразу.
+  let identity: { appUrl: string; clientId: string } | null = null;
+  try { identity = loadAppIdentity(options); } catch { /* см. выше */ }
+  const cookies = parseCookies(cookieHeader);
+  if (identity ? cookies[authCookieNames(identity.clientId, identity.appUrl).silentCheck] !== undefined
+    : Object.keys(cookies).some((name) => /^(?:__Host-)?auth_silent_checked\./.test(name))) return true;
   if (!searchParams) return false;
   return searchParams instanceof URLSearchParams
     ? searchParams.has(SILENT_CHECK_PARAM)

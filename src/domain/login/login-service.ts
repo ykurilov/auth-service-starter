@@ -59,15 +59,18 @@ export class LoginService {
     if (!validated.client.allowedProviders.includes(providerIdentity.provider)) {
       throw new ProviderNotAllowedError(providerIdentity.provider);
     }
-    const { user } = await this.identity.resolveLogin(providerIdentity);
+    // Адрес и его статус — по базе после привязки, а не по ответу провайдера.
+    const { user, email, emailVerified } = await this.identity.resolveLogin(providerIdentity);
     const auth: AuthSnapshot = {
       provider: providerIdentity.provider,
-      email: providerIdentity.email,
-      emailVerified: providerIdentity.emailVerified,
+      email,
+      emailVerified,
       name: providerIdentity.profile.name,
     };
     const code = await this.codes.issue({
       clientId: validated.client.id,
+      // Тип, по которому решено, нужно ли согласие: обмен сверит его с текущим.
+      clientType: validated.client.type,
       userId: user.id,
       redirectUri: validated.request.redirectUri,
       codeChallenge: validated.request.codeChallenge,
@@ -90,6 +93,8 @@ export class LoginService {
     }
     return this.codes.issue({
       clientId: validated.client.id,
+      // Тип, по которому решено, нужно ли согласие: обмен сверит его с текущим.
+      clientType: validated.client.type,
       userId,
       redirectUri: validated.request.redirectUri,
       codeChallenge: validated.request.codeChallenge,

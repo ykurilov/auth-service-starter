@@ -55,7 +55,7 @@ describe('SessionService управление', () => {
     expect((await service.listForUser('u1')).length).toBe(1);
   });
 
-  it('revokeAllForUserClient гасит только сессии указанного приложения', async () => {
+  it('revokeAllForUser гасит сессии пользователя во всех приложениях', async () => {
     const { service } = await setup();
     await service.start({
       ...base,
@@ -67,9 +67,9 @@ describe('SessionService управление', () => {
       clientId: 'app2',
       device: { userAgent: 'UA2', ip: '2.2.2.2' },
     });
-    await service.revokeAllForUserClient('u1', 'app1');
-    const clients = (await service.listForUser('u1')).map((s) => s.clientId);
-    expect(clients).not.toContain('app1');
-    expect(clients).toContain('app2');
+    await service.start({ ...base, userId: 'u2' });
+    await service.revokeAllForUser('u1');
+    expect(await service.listForUser('u1')).toEqual([]);
+    expect((await service.listForUser('u2')).length).toBe(1);
   });
 });

@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { createMemDb } from '../../../helpers/pg-mem-db.js';
+import { createMemDb, registerPgStubs } from '../../../helpers/pg-mem-db.js';
 import { runMigrations } from '../../../../src/adapters/db/migrate.js';
 import type { Db } from '../../../../src/adapters/db/pool.js';
 import type { RefreshTokenRecord } from '../../../../src/domain/sessions/refresh-token.js';
@@ -125,6 +125,7 @@ describe('PgRefreshTokenStore на pg-mem', () => {
     // pg-mem's BEGIN/ROLLBACK do not undo writes. This test uses its snapshot
     // rollback facility to implement the Db transaction contract faithfully.
     const mem = newDb({ noAstCoverageCheck: true });
+    registerPgStubs(mem);
     const pool = new (mem.adapters.createPg().Pool)();
     const query: Db['query'] = async (sql, params) => {
       const result = await pool.query(sql, params);
@@ -144,11 +145,12 @@ describe('PgRefreshTokenStore на pg-mem', () => {
         const tx: Db = { query: async (sql, params) => {
           if (failInsert && /insert into refresh_tokens/.test(sql)) throw new Error('injected insert failure');
           return query(sql, params);
-        }, withTransaction: (nested) => nested(tx), close: async () => {} };
+        }, withTransaction: (nested) => nested(tx), withConnection: (nested) => nested(tx), close: async () => {} };
         try { return await fn(tx); }
         catch (err) { backup.restore(); rolledBack = true; throw err; }
         finally { inside = false; }
       },
+      withConnection: (fn) => fn(transactional),
       close: async () => { await pool.end(); },
     };
     try {

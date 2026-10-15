@@ -1,3 +1,5 @@
+import type { ClientType } from '../clients/client.js';
+
 // Снимок аутентификации: провайдер + профиль на момент входа.
 // Переносится через authorization code в grant, чтобы сессия/refresh
 // перевыпускали id_token без повторного обращения к коду.
@@ -12,6 +14,8 @@ export interface AuthSnapshot {
 export interface AuthorizationGrant {
   userId: string;
   clientId: string;
+  // Тип клиента, по правилам которого вход решал, нужно ли согласие.
+  clientType: ClientType;
   scope: string;
   nonce?: string;
   auth: AuthSnapshot;
@@ -22,6 +26,7 @@ export interface AuthorizationCodeRecord {
   id: string;
   codeHash: string;
   clientId: string;
+  clientType: ClientType;
   userId: string;
   redirectUri: string;
   codeChallenge: string;

@@ -1,20 +1,16 @@
 import { loadModuleConfig, type LoadConfigOptions } from './core/config.js';
 import { OidcClient } from './core/oidc-client.js';
-import { createSessionManager } from './core/session-manager.js';
+import { createSessionManager, sharedRetiredRefreshTokens, type RetiredRefreshTokens } from './core/session-manager.js';
 import { temporaryUnavailable } from './session-guard.js';
 import { createPkce } from './core/pkce.js';
 import { seal, unseal } from './core/cookie-seal.js';
-import { buildSessionData, isSessionData } from './core/session-data.js';
+import { buildSessionData, isSessionData, type SessionData } from './core/session-data.js';
 import {
-  SESSION_COOKIE,
-  cookieName,
+  authCookieNames,
   SILENT_CHECK_PARAM,
   MAX_LOGIN_FLOWS,
-  LOGOUT_COOKIE,
-  FLOW_COOKIE,
   SESSION_MAX_AGE,
   FLOW_MAX_AGE,
-  SILENT_CHECK_COOKIE,
   SILENT_CHECK_MAX_AGE,
   serializeCookie,
   clearCookie,
@@ -28,6 +24,8 @@ import {
 // Нет поля — обычный интерактивный вход (так же читаются auth_flow старых версий).
 type SilentMode = 'then-interactive' | 'only';
 
+// state — привязка к state из адреса (см. stateBinding): запасной next тихой
+// проверки уже лежит в адресе и в cookie не дублируется.
 interface FlowState {
   verifier: string;
   state: string;
@@ -43,12 +41,33 @@ const INTERACTION_ERRORS = new Set([
   'account_selection_required',
 ]);
 
+const MAX_NEXT_BYTES = 2048;
+// Браузеры хранят cookie до 4096 байт на имя и значение; берём с запасом.
+const MAX_COOKIE_BYTES = 4000;
+const byteLength = (s: string) => new TextEncoder().encode(s).length;
+
+// state тихой проверки — «<случайная часть>~<запечатанный next>». В cookie
+// попытки кладём случайную часть и SHA-256 хвоста: state сверяется целиком, а
+// cookie не растёт вместе с next.
+async function stateBinding(state: string): Promise<string> {
+  const idx = state.indexOf('~');
+  if (idx === -1) return state;
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(state.slice(idx + 1))));
+  let bin = '';
+  for (const b of digest) bin += String.fromCharCode(b);
+  return `${state.slice(0, idx)}~${btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
+}
+// Адрес без query и fragment: так длинный next теряет параметры, но не страницу.
+const pathOnly = (next: string) => next.split(/[?#]/)[0] || '/';
+
 // next принимаем только как относительный путь внутри приложения — защита от
 // открытого редиректа. Всё, что не начинается с одиночного '/', заменяем на '/'.
+// Слишком длинный next сокращаем до пути страницы.
 function safeNext(raw: string | null): string {
-  if (!raw || new TextEncoder().encode(raw).length > 1024) return '/';
-  if (!raw.startsWith('/') || raw.startsWith('//') || /[\\\x00-\x20]/.test(raw)) return '/';
-  return raw;
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//') || /[\\\x00-\x20]/.test(raw)) return '/';
+  if (byteLength(raw) <= MAX_NEXT_BYTES) return raw;
+  const path = pathOnly(raw);
+  return byteLength(path) <= MAX_NEXT_BYTES ? path : '/';
 }
 
 // Страница сбоя входа. Сама вход не запускает: редирект на защищённую
@@ -76,26 +95,35 @@ function redirect(location: string, cookies: string[] = []): Response {
   return new Response(null, { status: 302, headers });
 }
 
-export function createAuthHandlers(options: LoadConfigOptions = {}) {
+// retired — реестр сессий, закрытых выходом или новым входом. По умолчанию
+// общий на процесс для client_id: его видят и guard, и middleware Next.js.
+export function createAuthHandlers(options: LoadConfigOptions = {}, retiredOverride?: RetiredRefreshTokens) {
   const config = loadModuleConfig(options);
+  const retired = retiredOverride ?? sharedRetiredRefreshTokens(config.clientId);
   const client = new OidcClient(config);
-  const resolve = createSessionManager(options);
+  const resolve = createSessionManager(options, retired);
   const secureApp = isSecureAppUrl(config.appUrl);
-  const name = (base: string) => cookieName(base, secureApp);
+  const names = authCookieNames(config.clientId, config.appUrl);
+  const FLOW_ID = /^[A-Za-z0-9_-]{22}$/;
   const flowName = (state: string | null): string | null => {
     const id = state?.split('~')[0];
-    return id && /^[A-Za-z0-9_-]{22}$/.test(id) ? `${name(FLOW_COOKIE)}.${id}` : null;
+    return id && FLOW_ID.test(id) ? `${names.flow}.${id}` : null;
   };
-  async function flowCleanup(cookieHeader: string | null): Promise<string[] | null> {
+  // Своя попытка — только точное имя `${names.flow}.<22 символа>`: у соседа с
+  // client_id вида «наш.что-то» хвост длиннее и с точкой.
+  const isOwnFlowCookie = (key: string) =>
+    key.startsWith(`${names.flow}.`) && FLOW_ID.test(key.slice(names.flow.length + 1));
+  // Свои попытки входа из cookie запроса: протухшие стираем, живые считаем.
+  async function flowCleanup(cookieHeader: string | null): Promise<{ expired: string[]; full: boolean }> {
     const expired: string[] = [];
     let active = 0;
     for (const [key, value] of Object.entries(parseCookies(cookieHeader))) {
-      if (!key.startsWith(`${name(FLOW_COOKIE)}.`)) continue;
+      if (!isOwnFlowCookie(key)) continue;
       const flow = await unseal<FlowState>(value, config.cookieSecret);
       if (flow && typeof flow.state === 'string' && flowName(flow.state) === key) active++;
       else expired.push(clearCookie(key, secureApp));
     }
-    return active >= MAX_LOGIN_FLOWS ? null : expired;
+    return { expired, full: active >= MAX_LOGIN_FLOWS };
   }
 
   async function GET(request: Request): Promise<Response> {
@@ -117,12 +145,17 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
   async function login(request: Request, url: URL, secure: boolean): Promise<Response> {
     const next = safeNext(url.searchParams.get('next'));
     const param = url.searchParams.get('silent');
-    const checked = parseCookies(request.headers.get('cookie'))[name(SILENT_CHECK_COOKIE)] !== undefined;
-    if (param === '1' && checked) return redirect(`${config.appUrl}${next}`);
-    const cleanup = await flowCleanup(request.headers.get('cookie'));
-    if (!cleanup) return new Response('Слишком много попыток входа. Завершите одну из открытых вкладок или повторите через 10 минут.', {
-      status: 429, headers: { 'cache-control': 'no-store', 'retry-after': String(FLOW_MAX_AGE) },
-    });
+    const checked = parseCookies(request.headers.get('cookie'))[names.silentCheck] !== undefined;
+    const { expired: cleanup, full } = await flowCleanup(request.headers.get('cookie'));
+    if (param === '1' && checked) return redirect(`${config.appUrl}${next}`, cleanup);
+    if (full) {
+      // Публичная страница при тихой проверке не получает 429: возвращаем её
+      // с меткой, она покажет «Войти».
+      if (param === '1') return redirect(silentReturn(next), [...cleanup, silentMark(secure)]);
+      const headers = new Headers({ 'cache-control': 'no-store', 'retry-after': String(FLOW_MAX_AGE) });
+      for (const c of cleanup) headers.append('set-cookie', c);
+      return new Response('Слишком много попыток входа. Завершите одну из открытых вкладок или повторите через 10 минут.', { status: 429, headers });
+    }
     if (param === '1') {
       return startFlow(next, secure, 'only', cleanup);
     }
@@ -133,16 +166,25 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
   // Метку ставим уже на старте тихого шага, а снимаем только при успешном
   // входе: любой сбой по дороге (обмен кода, протухший auth_flow) оставит её,
   // и повторного тихого захода по кругу не будет.
-  async function startFlow(next: string, secure: boolean, silent?: SilentMode, cleanup: string[] = []): Promise<Response> {
+  async function startFlow(requestedNext: string, secure: boolean, silent?: SilentMode, cleanup: string[] = []): Promise<Response> {
     const pkce = await createPkce();
-    // Для silent=1 next дублируем в state (запечатанным): если cookie в
-    // браузере отключены и auth_flow не дошла, callback всё равно вернёт
-    // пользователя на страницу с меткой в адресе, а не по кругу.
-    const state = silent === 'only' ? `${pkce.state}~${await seal({ next }, config.cookieSecret, FLOW_MAX_AGE)}` : pkce.state;
-    const flow: FlowState = { verifier: pkce.verifier, state, next };
-    if (silent) flow.silent = silent;
-    const sealed = await seal(flow, config.cookieSecret, FLOW_MAX_AGE);
-    const cookies = [...cleanup, serializeCookie(flowName(state)!, sealed, { maxAgeSeconds: FLOW_MAX_AGE, secure })];
+    const key = flowName(pkce.state)!;
+    // next, который не помещается в cookie попытки, сокращаем до пути, затем до '/'.
+    let next = requestedNext;
+    let state = pkce.state;
+    let sealed = '';
+    for (const candidate of [requestedNext, pathOnly(requestedNext), '/']) {
+      next = candidate;
+      // Для silent=1 next дублируем в state (запечатанным): если cookie в
+      // браузере отключены и auth_flow не дошла, callback всё равно вернёт
+      // пользователя на страницу с меткой в адресе, а не по кругу.
+      state = silent === 'only' ? `${pkce.state}~${await seal({ next }, config.cookieSecret, FLOW_MAX_AGE)}` : pkce.state;
+      const flow: FlowState = { verifier: pkce.verifier, state: await stateBinding(state), next };
+      if (silent) flow.silent = silent;
+      sealed = await seal(flow, config.cookieSecret, FLOW_MAX_AGE);
+      if (byteLength(`${key}=${sealed}`) <= MAX_COOKIE_BYTES) break;
+    }
+    const cookies = [...cleanup, serializeCookie(key, sealed, { maxAgeSeconds: FLOW_MAX_AGE, secure })];
     if (silent) cookies.push(silentMark(secure));
     return redirect(
       client.buildAuthorizeUrl({
@@ -154,8 +196,15 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
     );
   }
 
+  // Возврат после тихой проверки с меткой в адресе: работает и без cookie.
+  function silentReturn(next: string): string {
+    const target = new URL(next, config.appUrl);
+    target.searchParams.set(SILENT_CHECK_PARAM, '1');
+    return target.toString();
+  }
+
   function silentMark(secure: boolean): string {
-    return serializeCookie(SILENT_CHECK_COOKIE, '1', { maxAgeSeconds: SILENT_CHECK_MAX_AGE, secure });
+    return serializeCookie(names.silentCheck, '1', { maxAgeSeconds: SILENT_CHECK_MAX_AGE, secure });
   }
 
   // next из state тихой проверки silent=1 — только если печать цела.
@@ -166,10 +215,23 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
     return typeof data?.next === 'string' ? safeNext(data.next) : null;
   }
 
-  async function hasSession(cookies: Record<string, string>): Promise<boolean> {
-    const sealed = cookies[name(SESSION_COOKIE)];
+  async function sessionOf(cookies: Record<string, string>): Promise<SessionData | null> {
+    const sealed = cookies[names.session];
     const data = sealed ? await unseal(sealed, config.cookieSecret) : null;
-    return isSessionData(data) && data.accessTokenExpiresAt > Date.now();
+    return isSessionData(data) ? data : null;
+  }
+
+  async function hasSession(cookies: Record<string, string>): Promise<boolean> {
+    const data = await sessionOf(cookies);
+    return !!data && data.accessTokenExpiresAt > Date.now();
+  }
+
+  // Прежняя сессия закрыта: летящий refresh её токена не выдаст cookie, а
+  // сервис отзовёт её токены.
+  async function retire(data: SessionData | null): Promise<void> {
+    if (!data) return;
+    retired.retire(data.refreshToken);
+    await client.revoke(data.refreshToken);
   }
 
   async function callback(request: Request, url: URL, secure: boolean): Promise<Response> {
@@ -188,7 +250,7 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
     const sealed = key ? cookies[key] : undefined;
     const flow = sealed ? await unseal<FlowState>(sealed, config.cookieSecret) : null;
     // Свой вход — только если state сошёлся с запечатанным в auth_flow.
-    const ownFlow = flow && state && state === flow.state && typeof flow.verifier === 'string' && /^[A-Za-z0-9_-]{43,128}$/.test(flow.verifier) && typeof flow.next === 'string' && safeNext(flow.next) === flow.next && (flow.silent === undefined || flow.silent === 'only' || flow.silent === 'then-interactive') ? flow : null;
+    const ownFlow = flow && state && typeof flow.state === 'string' && flow.state === await stateBinding(state) && typeof flow.verifier === 'string' && /^[A-Za-z0-9_-]{43,128}$/.test(flow.verifier) && typeof flow.next === 'string' && safeNext(flow.next) === flow.next && (flow.silent === undefined || flow.silent === 'only' || flow.silent === 'then-interactive') ? flow : null;
     if (ownFlow && key) clearFlow = [clearCookie(key, secure)];
 
     if (!ownFlow) {
@@ -196,15 +258,15 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
       // проверка silent=1: возвращаем на страницу с меткой в адресе.
       const quietNext = await silentOnlyNext(state);
       if (quietNext === null) return fail();
-      const target = new URL(quietNext, config.appUrl);
-      target.searchParams.set(SILENT_CHECK_PARAM, '1');
-      return redirect(target.toString(), clearFlow);
+      return redirect(silentReturn(quietNext), clearFlow);
     }
 
     const next = ownFlow.next;
     // silent=1: любой сбой тихий — назад на страницу, она покажет «Войти».
+    // Сбой своего входа — всегда страница ошибки, даже при живой старой
+    // сессии: молча вернуть на неё значило бы скрыть, что вход не удался.
     const giveUp = () =>
-      ownFlow.silent === 'only' ? redirect(`${config.appUrl}${next}`, [...clearFlow, silentMark(secure)]) : fail(next);
+      ownFlow.silent === 'only' ? redirect(`${config.appUrl}${next}`, [...clearFlow, silentMark(secure)]) : errorPage(next, clearFlow);
 
     const error = url.searchParams.get('error');
     if (error) {
@@ -223,10 +285,12 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
       const data = buildSessionData({ ...tokens, now: new Date() });
       if (!data) return giveUp();
       const session = await seal(data, config.cookieSecret);
+      const previous = await sessionOf(cookies);
+      if (previous?.refreshToken !== data.refreshToken) await retire(previous);
       return redirect(`${config.appUrl}${next}`, [
-        serializeCookie(SESSION_COOKIE, session, { maxAgeSeconds: SESSION_MAX_AGE, secure }),
+        serializeCookie(names.session, session, { maxAgeSeconds: SESSION_MAX_AGE, secure }),
         ...clearFlow,
-        clearCookie(SILENT_CHECK_COOKIE, secure),
+        clearCookie(names.silentCheck, secure),
       ]);
     } catch {
       return giveUp();
@@ -235,14 +299,10 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
 
   async function logout(request: Request, secure: boolean): Promise<Response> {
     const cookies = parseCookies(request.headers.get('cookie'));
-    const sealed = cookies[name(SESSION_COOKIE)];
-    if (sealed) {
-      const data = await unseal(sealed, config.cookieSecret);
-      if (isSessionData(data)) await client.revoke(data.refreshToken);
-    }
+    await retire(await sessionOf(cookies));
     return redirect(client.buildLogoutUrl(), [
-      clearCookie(SESSION_COOKIE, secure),
-      clearCookie(SILENT_CHECK_COOKIE, secure),
+      clearCookie(names.session, secure),
+      clearCookie(names.silentCheck, secure),
     ]);
   }
 
@@ -255,7 +315,7 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
       '<p><a href="/">Отмена</a></p></html>', {
       headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
         'content-security-policy': "frame-ancestors 'none'; form-action 'self'; base-uri 'none'",
-        'set-cookie': serializeCookie(LOGOUT_COOKIE, token, { maxAgeSeconds: FLOW_MAX_AGE, secure }) },
+        'set-cookie': serializeCookie(names.logout, token, { maxAgeSeconds: FLOW_MAX_AGE, secure }) },
     });
   }
 
@@ -267,15 +327,15 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
     let csrf: FormDataEntryValue | null;
     try { csrf = (await request.formData()).get('csrf'); }
     catch { return new Response('Bad request', { status: 400 }); }
-    const expected = parseCookies(request.headers.get('cookie'))[name(LOGOUT_COOKIE)];
+    const expected = parseCookies(request.headers.get('cookie'))[names.logout];
     const data = typeof csrf === 'string' && csrf === expected
       ? await unseal<{ intent?: string }>(csrf, config.cookieSecret) : null;
     if (data?.intent !== 'logout') return new Response('Forbidden', { status: 403 });
     const res = await logout(request, secureApp);
-    res.headers.append('set-cookie', clearCookie(LOGOUT_COOKIE, secureApp));
+    res.headers.append('set-cookie', clearCookie(names.logout, secureApp));
     // Не оставляем активные login flow, способные восстановить сессию после выхода.
     for (const key of Object.keys(parseCookies(request.headers.get('cookie')))) {
-      if (key.startsWith(`${name(FLOW_COOKIE)}.`)) res.headers.append('set-cookie', clearCookie(key, secureApp));
+      if (isOwnFlowCookie(key)) res.headers.append('set-cookie', clearCookie(key, secureApp));
     }
     return res;
   }
@@ -286,7 +346,7 @@ export function createAuthHandlers(options: LoadConfigOptions = {}) {
     const headers = new Headers({ 'content-type': 'application/json', 'cache-control': 'no-store' });
     for (const line of result.setCookies) headers.append('set-cookie', line);
     if (result.kind === 'active') return new Response(JSON.stringify({ user: result.data.user }), { headers });
-    const silentChecked = parseCookies(request.headers.get('cookie'))[name(SILENT_CHECK_COOKIE)] !== undefined;
+    const silentChecked = parseCookies(request.headers.get('cookie'))[names.silentCheck] !== undefined;
     return new Response(JSON.stringify({ error: 'unauthenticated', silentChecked }), { status: 401, headers });
   }
 

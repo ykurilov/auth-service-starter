@@ -8,7 +8,7 @@ import { sha256Hex } from '../shared/hash.js';
 import { InvalidCredentialsError, InvalidEmailError } from './errors.js';
 import { codeIdentity } from './email-provider.js';
 import type { LoginChallengeStore, PendingLink } from './login-challenge.js';
-import { buildLoginCodeEmail } from '../../adapters/mail/templates.js';
+import { buildGoogleLinkCodeEmail, buildLoginCodeEmail } from '../../adapters/mail/templates.js';
 
 export interface EmailCodeProviderOptions {
   appName: string;
@@ -29,6 +29,7 @@ export interface ChallengeView {
   email: string;
   link: PendingLink | null;
   attemptsLeft: number;
+  resendsLeft: number;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -114,7 +115,7 @@ export class EmailCodeProvider implements IdentityProvider {
       expiresAt: new Date(now.getTime() + this.ttlMs()),
       consumedAt: null,
     });
-    await this.sendCode(email, code);
+    await this.sendCode(email, code, input.link ?? null);
     return { handle, email };
   }
 
@@ -131,7 +132,7 @@ export class EmailCodeProvider implements IdentityProvider {
       now,
     );
     if (!updated) return null;
-    await this.sendCode(updated.email, code);
+    await this.sendCode(updated.email, code, updated.link);
     return { email: updated.email };
   }
 
@@ -142,7 +143,12 @@ export class EmailCodeProvider implements IdentityProvider {
       this.clock.now(),
     );
     if (!record) return null;
-    return { email: record.email, link: record.link, attemptsLeft: record.maxAttempts - record.attempts };
+    return {
+      email: record.email,
+      link: record.link,
+      attemptsLeft: record.maxAttempts - record.attempts,
+      resendsLeft: record.maxResends - record.resends,
+    };
   }
 
   // Проверка кода. Сначала атомарно занимаем проверку (лимит не обойти
@@ -162,14 +168,14 @@ export class EmailCodeProvider implements IdentityProvider {
     return (await this.verifyChallenge(verifySchema.parse(credential))).identity;
   }
 
-  private async sendCode(email: string, code: string): Promise<void> {
+  // Попытка привязки Google — отдельное письмо: код подтверждает привязку,
+  // а не обычный вход.
+  private async sendCode(email: string, code: string, link: PendingLink | null): Promise<void> {
+    const opts = { to: email, code, ttlMinutes: this.opts.codeTtlMinutes, appName: this.opts.appName };
     await this.mailer.send(
-      buildLoginCodeEmail({
-        to: email,
-        code,
-        ttlMinutes: this.opts.codeTtlMinutes,
-        appName: this.opts.appName,
-      }),
+      link
+        ? buildGoogleLinkCodeEmail({ ...opts, ...(link.name ? { googleName: link.name } : {}) })
+        : buildLoginCodeEmail(opts),
     );
   }
 }

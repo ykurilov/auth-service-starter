@@ -17,6 +17,7 @@ function make(ttl = 60, now: Date = T0) {
 
 const issueParams = {
   clientId: 'app1',
+  clientType: 'internal' as const,
   userId: 'u1',
   redirectUri: 'https://app1/cb',
   codeChallenge: CHALLENGE,
@@ -41,6 +42,7 @@ describe('AuthorizationCodeService', () => {
     expect(grant).toEqual({
       userId: 'u1',
       clientId: 'app1',
+      clientType: 'internal',
       scope: 'openid profile',
       nonce: 'n-123',
       auth: { provider: 'email', emailVerified: false },
@@ -55,6 +57,21 @@ describe('AuthorizationCodeService', () => {
     });
     const grant = await service.redeem(redeem(code));
     expect(grant.auth).toEqual({ provider: 'email', email: 'a@b.co', emailVerified: true, name: 'Аня' });
+  });
+
+  it('inspect проверяет код, не гася его: после inspect redeem проходит', async () => {
+    const { service } = make();
+    const code = await service.issue(issueParams);
+    expect((await service.inspect(redeem(code))).userId).toBe('u1');
+    expect((await service.redeem(redeem(code))).userId).toBe('u1');
+    await expect(service.inspect(redeem(code))).rejects.toBeInstanceOf(InvalidGrantError);
+  });
+
+  it('inspect с неверным PKCE-verifier -> InvalidGrantError', async () => {
+    const { service } = make();
+    const code = await service.issue(issueParams);
+    await expect(service.inspect({ ...redeem(code), codeVerifier: 'другой-verifier-достаточной-длины-0987654321' }))
+      .rejects.toBeInstanceOf(InvalidGrantError);
   });
 
   it('код одноразовый: повторный redeem бросает InvalidGrantError', async () => {

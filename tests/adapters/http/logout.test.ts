@@ -176,6 +176,33 @@ describe('POST /logout', () => {
     await app.close();
   });
 
+  it('«Выйти во всех приложениях» отзывает сессии пользователя во всех клиентах', async () => {
+    const other: Client = { id: 'other', type: 'internal', redirectUris: ['https://other.example/cb'], allowedProviders: ['email'] };
+    const deps = await makeTestDeps({ clients: [LOGOUT_CLIENT, other] });
+    const app = buildServer(deps);
+    const sso = await loginAndGetSso(app);
+    await startDeviceSession(deps, sso, 'app');
+    await startDeviceSession(deps, sso, 'other');
+    const userId = (await deps.sso.resolve(sso))!.userId;
+    expect((await deps.sessions.listForUser(userId)).length).toBe(2);
+
+    const { csrfCookie, csrfField } = await getLogoutCsrf(app, { client_id: 'app' });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/logout',
+      payload: new URLSearchParams({ client_id: 'app', csrf: csrfField }).toString(),
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        cookie: `sso=${sso}; csrf=${csrfCookie}`,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(await deps.sessions.listForUser(userId)).toEqual([]);
+    expect(await deps.sso.resolve(sso)).toBeNull();
+    await app.close();
+  });
+
   it('post_logout_redirect_uri из белого списка → 302 на него', async () => {
     const deps = await makeTestDeps({ clients: [LOGOUT_CLIENT] });
     const app = buildServer(deps);

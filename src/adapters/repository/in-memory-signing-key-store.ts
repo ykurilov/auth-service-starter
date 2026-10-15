@@ -32,14 +32,17 @@ export class InMemorySigningKeyStore implements SigningKeyStore {
     return InMemorySigningKeyStore.copy(key);
   }
 
-  async rotate(newActive: StoredSigningKey, at: Date): Promise<void> {
+  async rotate(newActive: StoredSigningKey, at: Date): Promise<string[]> {
+    const retired: string[] = [];
     for (const r of this.records) {
       if (r.status === 'active') {
         r.status = 'retired';
         r.retiredAt = at;
+        retired.push(r.kid);
       }
     }
     this.records.push(InMemorySigningKeyStore.copy(newActive));
+    return retired;
   }
 
   async revoke(kid: string, at: Date): Promise<void> {

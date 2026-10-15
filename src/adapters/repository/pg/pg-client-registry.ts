@@ -52,6 +52,16 @@ export class PgClientRegistry implements ClientRegistry {
     return rows[0] ? PgClientRegistry.toClient(rows[0]) : null;
   }
 
+  // Чтение с блокировкой строки до конца транзакции (вызывать внутри неё):
+  // 'share' — обмен кода, 'update' — изменение и удаление клиента.
+  async findClientLocked(id: string, mode: 'share' | 'update'): Promise<Client | null> {
+    const { rows } = await this.db.query<ClientRow>(
+      `select ${PgClientRegistry.selectColumns} from clients where id = $1 for ${mode === 'share' ? 'share' : 'update'}`,
+      [id],
+    );
+    return rows[0] ? PgClientRegistry.toClient(rows[0]) : null;
+  }
+
   async list(): Promise<Client[]> {
     const { rows } = await this.db.query<ClientRow>(
       `select ${PgClientRegistry.selectColumns} from clients`,

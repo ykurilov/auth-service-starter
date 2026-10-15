@@ -93,13 +93,14 @@ export class PgSigningKeyStore implements SigningKeyStore {
     return active;
   }
 
-  async rotate(newActive: StoredSigningKey, at: Date): Promise<void> {
-    await this.db.withTransaction(async (tx) => {
-      await tx.query(
-        `update signing_keys set status = 'retired', retired_at = $1 where status = 'active'`,
+  async rotate(newActive: StoredSigningKey, at: Date): Promise<string[]> {
+    return this.db.withTransaction(async (tx) => {
+      const { rows } = await tx.query<{ kid: string }>(
+        `update signing_keys set status = 'retired', retired_at = $1 where status = 'active' returning kid`,
         [at],
       );
       await PgSigningKeyStore.insert(tx, newActive);
+      return rows.map((r) => r.kid);
     });
   }
 

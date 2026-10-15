@@ -151,5 +151,16 @@ describe('InMemorySessionStore', () => {
     expect((await store.findById('google'))?.revokedAt).toEqual(at);
     expect((await store.findById('other'))?.revokedAt).toBeNull();
   });
+  it('revokeForUser гасит сессии пользователя во всех клиентах, не трогая чужие', async () => {
+    const store = new InMemorySessionStore(new InMemoryRefreshTokenStore());
+    await store.save(make());
+    await store.save(make({ id: 'other-client', clientId: 'other' }));
+    await store.save(make({ id: 'stranger', userId: 'someone-else' }));
+    const at = new Date('2026-07-06T00:00:00Z');
+    await store.revokeForUser(make().userId, at);
+    expect((await store.findById('s1'))?.revokedAt).toEqual(at);
+    expect((await store.findById('other-client'))?.revokedAt).toEqual(at);
+    expect((await store.findById('stranger'))?.revokedAt).toBeNull();
+  });
 
 });

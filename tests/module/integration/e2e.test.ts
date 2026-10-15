@@ -1,16 +1,17 @@
-import { confirmLogout } from '../helpers.js';
+import { confirmLogout, cookieNamesFor } from '../helpers.js';
 import { describe, it, expect } from 'vitest';
 import { makeAppFetch } from './inject-fetch.js';
 import { createAuthHandlers } from '../../../module/server/handlers.js';
 import { createAuthMiddleware } from '../../../module/server/nextjs.js';
 import { getUser } from '../../../module/server/server.js';
-import { parseCookies, SESSION_COOKIE, FLOW_COOKIE } from '../../../module/server/cookies.js';
+import { parseCookies } from '../../../module/server/cookies.js';
 import { unseal } from '../../../module/server/core/cookie-seal.js';
 import { extractChallenge } from '../../adapters/http/helpers.js';
 
 const APP = 'https://app.test';
 const SECRET = 'секрет-достаточной-длины-32-символа-минимум-1';
 const env = { AUTH_URL: 'https://auth.example', AUTH_APP_URL: APP, AUTH_COOKIE_SECRET: SECRET };
+const { session: SESSION_COOKIE, flow: FLOW_COOKIE } = cookieNamesFor(env);
 
 function setCookies(res: Response): string[] {
   return (res.headers as unknown as { getSetCookie(): string[] }).getSetCookie();

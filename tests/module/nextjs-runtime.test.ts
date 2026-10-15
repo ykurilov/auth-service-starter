@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { createAuthMiddleware } from '../../module/server/nextjs.js';
-import { getUser } from '../../module/server/server.js';
+import { getUser, silentCheckDone } from '../../module/server/server.js';
 import { seal } from '../../module/server/core/cookie-seal.js';
-import { SESSION_COOKIE } from '../../module/server/cookies.js';
+import { cookieNamesFor } from './helpers.js';
 
 // Next — peer runtime приложения, не зависимость модуля. В worktree путь
 // к установленному demo можно передать через AUTH_TEST_NEXT_DEMO.
@@ -16,6 +16,7 @@ for (const root of [process.env.AUTH_TEST_NEXT_DEMO, 'examples/nextjs-demo'].fil
 }
 const SECRET = 'test-only-next-runtime-secret-longer-than-32';
 const env = { AUTH_URL: 'https://auth.test', AUTH_APP_URL: 'https://app.test', AUTH_COOKIE_SECRET: SECRET };
+const { session: SESSION_COOKIE } = cookieNamesFor(env);
 const jwt = (claims: object) => `e30.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`;
 
 describe.skipIf(!runtime)('настоящие NextRequest/NextResponse, request store и SSR headers()/cookies()', () => {
@@ -61,7 +62,9 @@ describe.skipIf(!runtime)('настоящие NextRequest/NextResponse, request 
           expect(current.get('x-request-id')).toBe('keep-me');
           const currentCookies = await cookies();
           expect(currentCookies.get('theme')?.value).toBe('dark');
-          expect(!!currentCookies.get(SESSION_COOKIE)).toBe(outcome === 'refresh');
+          // Временный сбой: cookie остаётся, страница видит «тихая проверка сделана».
+          expect(!!currentCookies.get(SESSION_COOKIE)).toBe(outcome !== 'revoked');
+          expect(silentCheckDone(current.get('cookie'), {}, { env })).toBe(outcome === 'temporary-expired');
           const user = await getUser(current.get('cookie'), { env });
           return renderToStaticMarkup(React.createElement('div', null, user?.name ?? 'anonymous'));
         }));

@@ -1,4 +1,5 @@
 import type { Db } from '../../db/pool.js';
+import type { ClientType } from '../../../domain/clients/client.js';
 import type {
   AuthSnapshot,
   AuthorizationCodeRecord,
@@ -11,6 +12,7 @@ interface AuthorizationCodeRow {
   id: string;
   code_hash: string;
   client_id: string;
+  client_type: ClientType;
   user_id: string;
   redirect_uri: string;
   code_challenge: string;
@@ -21,11 +23,15 @@ interface AuthorizationCodeRow {
   consumed_at: Date | null;
 }
 
-const SELECT_COLUMNS =
-  'id, code_hash, client_id, user_id, redirect_uri, code_challenge, scope, nonce, auth, expires_at, consumed_at';
+const SELECT_COLUMNS = [
+  'id', 'code_hash', 'client_id', 'client_type', 'user_id', 'redirect_uri', 'code_challenge',
+  'scope', 'nonce', 'auth', 'expires_at', 'consumed_at',
+].map((column) => `ac.${column}`).join(', ');
 
 // Postgres-реализация AuthorizationCodeStore. Контракт совпадает с in-memory
 // эталоном. consume — атомарный CAS. Все запросы параметризованы.
+// Код привязан к регистрации клиента (clients.registration_id) на момент
+// записи: клиент, удалённый и созданный заново с тем же id, его не находит.
 export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
   constructor(private readonly db: Db) {}
 
@@ -34,6 +40,7 @@ export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
       id: row.id,
       codeHash: row.code_hash,
       clientId: row.client_id,
+      clientType: row.client_type,
       userId: row.user_id,
       redirectUri: row.redirect_uri,
       codeChallenge: row.code_challenge,
@@ -50,8 +57,10 @@ export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
   async save(record: AuthorizationCodeRecord): Promise<void> {
     await this.db.query(
       `insert into authorization_codes
-         (id, code_hash, client_id, user_id, redirect_uri, code_challenge, scope, nonce, auth, expires_at, consumed_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         (id, code_hash, client_id, user_id, redirect_uri, code_challenge, scope, nonce, auth,
+          expires_at, consumed_at, client_registration_id, client_type)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+               (select registration_id from clients where id = $3), $12)`,
       [
         record.id,
         record.codeHash,
@@ -64,6 +73,7 @@ export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
         JSON.stringify(record.auth),
         record.expiresAt,
         record.consumedAt,
+        record.clientType,
       ],
     );
   }
@@ -73,8 +83,10 @@ export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
     now: Date,
   ): Promise<AuthorizationCodeRecord | null> {
     const { rows } = await this.db.query<AuthorizationCodeRow>(
-      `select ${SELECT_COLUMNS} from authorization_codes
-        where code_hash = $1 and consumed_at is null and expires_at > $2`,
+      `select ${SELECT_COLUMNS}
+         from authorization_codes ac
+         join clients c on c.id = ac.client_id and c.registration_id = ac.client_registration_id
+        where ac.code_hash = $1 and ac.consumed_at is null and ac.expires_at > $2`,
       [codeHash, now],
     );
     return rows[0] ? PgAuthorizationCodeStore.toRecord(rows[0]) : null;

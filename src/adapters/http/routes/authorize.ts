@@ -2,12 +2,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { Config } from '../../../config/config.js';
+import { MailDeliveryError } from '../../../ports/mailer.js';
 import type { HttpDeps } from '../deps.js';
 import type { AuthorizationRequest } from '../../../domain/login/login-service.js';
 import { loginPage } from '../views/login-page.js';
 import { consentPage } from '../views/consent-page.js';
 import { errorPage } from '../views/error-page.js';
-import type { OidcParams } from '../views/oidc-params.js';
+import { authorizeUrl, type OidcParams } from '../views/oidc-params.js';
 import { setSsoCookie, readSsoCookie } from '../cookies.js';
 import { ensureCsrf, isSameOriginRequest, readCsrfCookie, verifyCsrf } from '../csrf.js';
 import { enforce, ipHash } from '../rate-limit.js';
@@ -58,8 +59,9 @@ const codeRequestSchema = formSchema.extend({ challenge: z.string().min(1).max(2
 const codeVerifySchema = codeRequestSchema.extend({ code: z.string().min(1).max(32) });
 // Вход через Google: OIDC-параметры + ID Token (credential) от GIS-виджета.
 const googleSchema = formSchema.extend({ credential: z.string().min(1) });
-// Согласие (consent): только OIDC-параметры + CSRF.
-const confirmSchema = formSchema;
+// Согласие (consent): OIDC-параметры + CSRF + пользователь, которому показан
+// экран. Нет поля (старая страница) — как несовпадение: экран покажут заново.
+const confirmSchema = formSchema.extend({ expected_user: z.string().max(200).optional() });
 
 export function redirectWithCode(
   reply: FastifyReply,
@@ -164,6 +166,10 @@ function authorizeError(
   return authorizeErrorPage(err, reply, logger);
 }
 
+// Почтовый провайдер не принял письмо или не ответил вовремя (таймаут в
+// адаптере). Пользователь остаётся на своём шаге и может повторить.
+const MAIL_FAILED = 'Не удалось отправить письмо с кодом. Попробуйте ещё раз через минуту.';
+
 export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
   const otp = deps.otpRateLimiter;
 
@@ -171,7 +177,11 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
   // задан) и клиент допущен к нему в allowedProviders. Вместе с кнопкой сервер
   // выпускает одноразовый nonce, хранит его у себя (привязка к браузеру и
   // клиенту) и гасит при входе — повтор того же id_token не пройдёт.
+  // Выпуск nonce ограничен по источнику (в production общий Pg-счётчик держит
+  // предел и при сбое Redis). Лимит исчерпан — страница входа без кнопки
+  // Google: вход по почте nonce не нужен и работать должен.
   const googleFields = async (
+    req: FastifyRequest,
     validated: ValidatedAuthorization,
     binding: string,
   ): Promise<{ googleClientId?: string; googleNonce?: string }> => {
@@ -183,6 +193,8 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     ) {
       return {};
     }
+    const rule = deps.config.rateLimits.identifyPerIp;
+    if (!(await otp.hit(`google-nonce:${ipHash(req)}`, rule.limit, rule.windowSeconds)).allowed) return {};
     return {
       googleClientId: deps.config.googleClientId,
       googleNonce: await deps.googleNonces.issue(binding, validated.client.id),
@@ -197,12 +209,6 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     validated: ValidatedAuthorization,
     extra: { email?: string; error?: string; notice?: string; status?: number } = {},
   ): Promise<FastifyReply> => {
-    // Ограничиваем создание серверных nonce, включая повторные GET формы.
-    // В production общий Pg-счётчик сохраняет предел и при сбое Redis.
-    if (deps.googleProvider && deps.googleNonces && deps.config.googleClientId &&
-        validated.client.allowedProviders.includes(GOOGLE_PROVIDER) &&
-        !(await enforce(deps, reply, `google-nonce:${ipHash(req)}`,
-          deps.config.rateLimits.identifyPerIp, otp))) return reply;
     const csrfToken = ensureCsrf(req, reply, deps.config);
     return html(
       reply,
@@ -213,7 +219,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
         ...(extra.email !== undefined ? { email: extra.email } : {}),
         ...(extra.error !== undefined ? { error: extra.error } : {}),
         ...(extra.notice !== undefined ? { notice: extra.notice } : {}),
-        ...(await googleFields(validated, csrfToken)),
+        ...(await googleFields(req, validated, csrfToken)),
       }),
     );
   };
@@ -223,10 +229,11 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     reply: FastifyReply,
     params: OidcParams,
     input: { email: string; challenge: string; error?: string; notice?: string },
+    status = 200,
   ): FastifyReply =>
     html(
       reply,
-      200,
+      status,
       loginPage({ params, mode: 'code', csrfToken: ensureCsrf(req, reply, deps.config), ...input }),
     );
 
@@ -291,6 +298,10 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     } catch (err) {
       if (err instanceof InvalidEmailError)
         return identifyPage(req, reply, params, validated, { email: rawEmail, error: 'Проверьте адрес почты', status: 400 });
+      if (err instanceof MailDeliveryError) {
+        deps.logger.error({ err }, 'письмо с кодом не отправлено');
+        return identifyPage(req, reply, params, validated, { email: rawEmail, error: MAIL_FAILED, status: 503 });
+      }
       throw err;
     }
     return codePage(req, reply, params, {
@@ -346,7 +357,11 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     }
     if (session) {
       const csrfToken = ensureCsrf(req, reply, deps.config);
-      return html(reply, 200, consentPage({ params, email: session.auth.email ?? '', csrfToken }));
+      return html(
+        reply,
+        200,
+        consentPage({ params, email: session.auth.email ?? '', csrfToken, expectedUser: session.userId }),
+      );
     }
     return identifyPage(req, reply, params, validated);
   });
@@ -384,7 +399,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     }
     try {
       const { code, userId, auth } = await deps.login.completeLogin(validated, pid);
-      const { rawToken } = await deps.sso.start(userId, auth);
+      const { rawToken } = await deps.sso.start(userId, auth, readSsoCookie(req, deps.config));
       setSsoCookie(reply, deps.config, rawToken);
       return redirectWithCode(reply, params.redirect_uri, code, params.state);
     } catch (err) {
@@ -443,13 +458,24 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
       return identifyPage(req, reply, params, validated, {
         error: 'Код истёк или попытки закончились — запросите новый код',
       });
-    if (!(await enforceSendBudget(req, reply, view.email))) return reply;
-    const resent = await deps.codeProvider.resend({ handle: challenge, binding });
-    if (!resent)
-      return identifyPage(req, reply, params, validated, {
+    const resendExhausted = () =>
+      identifyPage(req, reply, params, validated, {
         email: view.email,
         error: 'Больше отправить код в этой попытке нельзя — начните вход заново',
       });
+    // Попытка уже исчерпана (повторы или проверки) — письма не будет, и бюджет
+    // отправок не тратим.
+    if (view.resendsLeft <= 0 || view.attemptsLeft <= 0) return resendExhausted();
+    if (!(await enforceSendBudget(req, reply, view.email))) return reply;
+    let resent;
+    try {
+      resent = await deps.codeProvider.resend({ handle: challenge, binding });
+    } catch (err) {
+      if (!(err instanceof MailDeliveryError)) throw err;
+      deps.logger.error({ err }, 'письмо с кодом не отправлено');
+      return codePage(req, reply, params, { email: view.email, challenge, error: MAIL_FAILED }, 503);
+    }
+    if (!resent) return resendExhausted();
     return codePage(req, reply, params, { email: resent.email, challenge, notice: 'Отправили новый код' });
   });
 
@@ -487,7 +513,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
           }
         : verified.identity;
       const { code: issued, userId, auth } = await deps.login.completeLogin(validated, pid);
-      const { rawToken } = await deps.sso.start(userId, auth);
+      const { rawToken } = await deps.sso.start(userId, auth, readSsoCookie(req, deps.config));
       setSsoCookie(reply, deps.config, rawToken);
       if (wantsReplaceNavigation(req))
         return replaceNavigation(
@@ -506,9 +532,16 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
         view && view.attemptsLeft > 0
           ? 'Неверный или просроченный код'
           : 'Код истёк или попытки закончились — запросите новый код';
+      const exhausted = !view || view.attemptsLeft <= 0;
+      // JS-режим: при исчерпанной попытке форма кода бесполезна — сигнал
+      // вернуться к вводу почты (prompt=login, чтобы SSO-cookie не увела на
+      // экран согласия).
       if (wantsReplaceNavigation(req))
-        return reply.status(401).header('cache-control', 'no-store').send({ error: message });
-      if (!view || view.attemptsLeft <= 0)
+        return reply
+          .status(401)
+          .header('cache-control', 'no-store')
+          .send(exhausted ? { error: message, restartTo: authorizeUrl(params, true) } : { error: message });
+      if (exhausted)
         return identifyPage(req, reply, params, validated, { ...(view ? { email: view.email } : {}), error: message });
       return codePage(req, reply, params, { email: view.email, challenge, error: message });
     }
@@ -518,7 +551,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     const parsed = confirmSchema.safeParse(req.body);
     if (!parsed.success)
       return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
-    const { csrf, ...rest } = parsed.data;
+    const { csrf, expected_user, ...rest } = parsed.data;
     const params: OidcParams = rest;
     if (csrfGuard(req, reply, deps.config, csrf) === null) return;
     let validated;
@@ -529,6 +562,10 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     }
     const session = await resolveCompatibleSsoSession(req, reply, validated);
     if (!session) return identifyPage(req, reply, params, validated);
+    // Экран показывали другому пользователю (в соседней вкладке сменили
+    // аккаунт): код не выдаём, а возвращаем на /authorize — там согласие
+    // покажут заново уже с текущим аккаунтом.
+    if (expected_user !== session.userId) return reply.redirect(authorizeUrl(params), 303);
     try {
       const code = await deps.login.completeSsoLogin(validated, session.userId, session.auth);
       return redirectWithCode(reply, params.redirect_uri, code, params.state);

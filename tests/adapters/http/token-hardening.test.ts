@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { buildServer } from '../../../src/adapters/http/server.js';
+import type { ClientType } from '../../../src/domain/clients/client.js';
 import { makeTestDeps, TEST_CHALLENGE, TEST_VERIFIER } from './helpers.js';
 
 const start = (userId: string, clientId = 'app', provider = 'email') => ({
   userId, clientId, provider, profile: {}, scope: 'openid', device: { ip: '127.0.0.1' },
 });
-const params = (userId = 'user') => ({
-  userId, clientId: 'app', redirectUri: 'https://app.example/cb',
+const params = (userId = 'user', clientType: ClientType = 'external') => ({
+  userId, clientId: 'app', clientType, redirectUri: 'https://app.example/cb',
   codeChallenge: TEST_CHALLENGE, scope: 'openid', auth: { provider: 'email', emailVerified: true },
 });
 const codeBody = (code: string) => ({ grant_type: 'authorization_code', code,
@@ -50,6 +51,28 @@ describe('token endpoint trusted principals and live client policy', () => {
         const res = await app.inject({ method: 'POST', url: '/oauth/token', payload: codeBody(code) });
         expect(res.statusCode).toBe(200);
       }
+    } finally { await app.close(); }
+  });
+
+  it('отказ по лимиту пользователя не гасит код и не создаёт сессию', async () => {
+    const deps = await makeTestDeps();
+    let denyUser = true;
+    const inner = deps.rateLimiter;
+    deps.rateLimiter = {
+      hit: (key, limit, windowSeconds) => key.startsWith('token-user:') && denyUser
+        ? Promise.resolve({ allowed: false, remaining: 0, retryAfterSeconds: 30 })
+        : inner.hit(key, limit, windowSeconds),
+      close: () => inner.close(),
+    };
+    const app = buildServer(deps);
+    try {
+      const code = await deps.codes.issue(params('user'));
+      const limited = await app.inject({ method: 'POST', url: '/oauth/token', payload: codeBody(code) });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.headers['retry-after']).toBe('30');
+      expect(await deps.sessions.listForUser('user')).toEqual([]);
+      denyUser = false;
+      expect((await app.inject({ method: 'POST', url: '/oauth/token', payload: codeBody(code) })).statusCode).toBe(200);
     } finally { await app.close(); }
   });
 
@@ -107,7 +130,7 @@ describe('token endpoint trusted principals and live client policy', () => {
       redirectUris: ['https://app.example/cb'], allowedProviders: ['email', 'google'] }] });
     const app = buildServer(deps);
     try {
-      const code = await deps.codes.issue(params());
+      const code = await deps.codes.issue(params('user', 'internal'));
       const email = await deps.sessions.start(start('user'));
       const google = await deps.sessions.start(start('user', 'app', 'google'));
       const patched = await app.inject({ method: 'PATCH', url: '/admin/clients/app',
@@ -122,6 +145,29 @@ describe('token endpoint trusted principals and live client policy', () => {
       await deps.adminClients!.update('app', { allowedProviders: ['email', 'google'] });
       expect((await refresh(email.refreshToken)).statusCode).toBe(400);
     } finally { await app.close(); }
+  });
+
+  it('R09: смена типа клиента отзывает его сессии и гасит невыданные коды; PATCH без смены типа их не трогает', async () => {
+    for (const [from, to] of [['internal', 'external'], ['external', 'internal']] as const) {
+      const deps = await makeTestDeps({ adminApiToken: 'test-admin', clients: [{ id: 'app', type: from,
+        redirectUris: ['https://app.example/cb'], allowedProviders: ['email'] }] });
+      const app = buildServer(deps);
+      try {
+        const patch = (payload: object) => app.inject({ method: 'PATCH', url: '/admin/clients/app',
+          headers: { authorization: 'Bearer test-admin' }, payload });
+        const refresh = (raw: string) => app.inject({ method: 'POST', url: '/oauth/token', payload: {
+          grant_type: 'refresh_token', refresh_token: raw } });
+        const kept = await deps.sessions.start(start('user'));
+        expect((await patch({ type: from, redirectUris: ['https://app.example/cb'] })).statusCode).toBe(200);
+        const keptNext = await refresh(kept.refreshToken);
+        expect(keptNext.statusCode).toBe(200);
+
+        const code = await deps.codes.issue(params('user', from));
+        expect((await patch({ type: to })).statusCode).toBe(200);
+        expect((await app.inject({ method: 'POST', url: '/oauth/token', payload: codeBody(code) })).statusCode).toBe(400);
+        expect((await refresh(keptNext.json().refresh_token)).statusCode).toBe(400);
+      } finally { await app.close(); }
+    }
   });
 
   it('current provider and redirect policy is enforced for grants without relying on revocation', async () => {

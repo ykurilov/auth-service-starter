@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createAuthHandlers } from '../../../module/server/handlers.js';
 import { createAuthMiddleware } from '../../../module/server/nextjs.js';
 import { getUser, silentCheckDone } from '../../../module/server/server.js';
-import { FLOW_COOKIE, SILENT_CHECK_COOKIE } from '../../../module/server/cookies.js';
+import { cookieNamesFor } from '../helpers.js';
 
 // Модель браузера: ходит по редиректам между приложением (middleware → маршруты
 // модуля или страница) и заглушкой сервиса авторизации, хранит cookie.
@@ -12,6 +12,7 @@ const APP = 'https://app.test';
 const AUTH = 'https://auth.test';
 const SECRET = 'секрет-достаточной-длины-32-символа-минимум-1';
 const env = { AUTH_URL: AUTH, AUTH_APP_URL: APP, AUTH_COOKIE_SECRET: SECRET };
+const { flow: FLOW_COOKIE, silentCheck: SILENT_CHECK_COOKIE } = cookieNamesFor(env);
 const MAX_HOPS = 15;
 
 function fakeJwt(payload: Record<string, unknown>): string {
@@ -55,7 +56,7 @@ async function homePage(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const cookie = req.headers.get('cookie');
   const user = await getUser(cookie, { env });
-  if (!user && !silentCheckDone(cookie, url.searchParams))
+  if (!user && !silentCheckDone(cookie, url.searchParams, { env }))
     return new Response(null, { status: 307, headers: { location: `${APP}/api/auth/login?silent=1&next=/` } });
   return new Response(user ? 'Привет' : 'Войти', { status: 200 });
 }

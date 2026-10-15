@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { createSessionGuard } from '../../module/server/session-guard.js';
 import { seal, unseal } from '../../module/server/core/cookie-seal.js';
-import { SESSION_COOKIE, parseCookies } from '../../module/server/cookies.js';
+import { parseCookies } from '../../module/server/cookies.js';
+import { cookieNamesFor } from './helpers.js';
 
 // Общая защита без фреймворка: по запросу решает «пропустить» (с пользователем
 // и cookie, которые надо дописать к ответу) или «отказать» (готовый ответ).
@@ -10,6 +11,7 @@ import { SESSION_COOKIE, parseCookies } from '../../module/server/cookies.js';
 
 const SECRET = 'секрет-достаточной-длины-32-символа-минимум-1';
 const env = { AUTH_URL: 'https://auth.test', AUTH_APP_URL: 'https://app.test', AUTH_COOKIE_SECRET: SECRET };
+const { session: SESSION_COOKIE } = cookieNamesFor(env);
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const b64 = (o: unknown) =>

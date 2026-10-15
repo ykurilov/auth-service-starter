@@ -10,6 +10,7 @@ import type { IdentityRepository } from '../../domain/identity/identity-reposito
 import type { IdentityProvider } from '../../domain/identity/provider-identity.js';
 import type { SsoSessionService } from '../../domain/sso/sso-session-service.js';
 import type { ClientRegistry, ClientWriteStore } from '../../domain/clients/client.js';
+import type { ClientLock } from '../../domain/clients/client-lock.js';
 import type { RateLimiter } from '../../ports/rate-limiter.js';
 import type { GoogleNonceService } from '../../domain/google-login/google-nonce.js';
 
@@ -34,6 +35,8 @@ export interface HttpDeps {
   // Записываемый реестр для Admin API. Опционален: без него роут /admin/clients
   // не монтируется.
   adminClients?: ClientWriteStore;
+  // Блокировка регистрации клиента: обмен кода против изменения и удаления клиента.
+  clientLock: ClientLock;
   rateLimiter: RateLimiter;
   // Лимитер кодов из письма (отправка и проверка). В боевом режиме — Postgres:
   // общий для экземпляров, переживает перезапуск и не зависит от Redis.

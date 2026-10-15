@@ -15,6 +15,20 @@ export interface ClientRegistry {
 // Частичный патч клиента для Admin API. id менять нельзя.
 export type ClientPatch = Partial<Omit<Client, 'id'>>;
 
+// Клиент после патча: заданные поля заменяются, остальные остаются прежними.
+export function applyClientPatch(client: Client, patch: ClientPatch): Client {
+  const next: Client = {
+    ...client,
+    ...(patch.type !== undefined ? { type: patch.type } : {}),
+    ...(patch.redirectUris !== undefined ? { redirectUris: patch.redirectUris } : {}),
+    ...(patch.allowedProviders !== undefined ? { allowedProviders: patch.allowedProviders } : {}),
+  };
+  if (patch.postLogoutRedirectUris !== undefined) {
+    next.postLogoutRedirectUris = patch.postLogoutRedirectUris;
+  }
+  return next;
+}
+
 // Записываемый порт реестра: чтение (findClient) + CRUD для Admin API.
 // Реализуют и in-memory, и Postgres-реестры.
 export interface ClientWriteStore extends ClientRegistry {

@@ -33,6 +33,8 @@ export interface SessionStore {
   revoke(id: string, at: Date): Promise<void>;
   // Revoke the client's sessions except those using a currently allowed provider.
   revokeForClient(clientId: string, at: Date, allowedProviders?: string[]): Promise<void>;
+  // Отзывает все живые сессии пользователя во всех клиентах.
+  revokeForUser(userId: string, at: Date): Promise<void>;
   // Живые (не отозванные и не истёкшие на момент now) сессии пользователя.
   findActiveByUser(userId: string, now: Date): Promise<Session[]>;
   // Удаляет сессии с expires_at < before ИЛИ (отозвана И revoked_at < before).

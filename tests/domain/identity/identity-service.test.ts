@@ -156,3 +156,53 @@ describe('IdentityService.resolveLogin', () => {
     expect(email?.verified).toBe(true);
   });
 });
+
+// R01: адрес и его статус для id_token и SSO-сессии берутся из базы после
+// записи, а не из ответа провайдера.
+describe('IdentityService.resolveLogin: адрес входа по состоянию базы', () => {
+  let repo: InMemoryIdentityRepository;
+  let service: IdentityService;
+
+  beforeEach(() => {
+    repo = new InMemoryIdentityRepository(fakeClock(new Date('2026-01-01T00:00:00.000Z')));
+    service = new IdentityService(repo);
+  });
+
+  it('обычный вход: подтверждённый адрес этого входа', async () => {
+    const res = await service.resolveLogin(pid());
+    expect(res.email).toBe('alice@example.com');
+    expect(res.emailVerified).toBe(true);
+  });
+
+  it('привязанный Google принёс новый адрес без доказанного владения → прежний подтверждённый адрес', async () => {
+    const first = await service.resolveLogin(pid({ provider: 'google', subject: 'g-1' }));
+    const again = await service.resolveLogin(
+      pid({ provider: 'google', subject: 'g-1', email: 'new@other.example', emailVerified: false }),
+    );
+    expect(again.user.id).toBe(first.user.id);
+    expect(again.email).toBe('alice@example.com');
+    expect(again.emailVerified).toBe(true);
+    expect((await repo.findEmail(first.user.id, 'new@other.example'))?.verified).toBe(false);
+  });
+
+  it('адрес подтверждён у другого пользователя → в снимок уходит прежний адрес, не чужой', async () => {
+    await service.resolveLogin(pid({ provider: 'email', subject: 'code:victim@corp.example', email: 'victim@corp.example' }));
+    const a = await service.resolveLogin(pid({ provider: 'google', subject: 'g-a', email: 'a@corp.example' }));
+    const again = await service.resolveLogin(
+      pid({ provider: 'google', subject: 'g-a', email: 'victim@corp.example', emailVerified: true }),
+    );
+    expect(again.user.id).toBe(a.user.id);
+    expect(again.email).toBe('a@corp.example');
+    expect(again.emailVerified).toBe(true);
+  });
+
+  it('подтверждённых адресов у пользователя нет → адрес входа с email_verified=false', async () => {
+    const legacy = await repo.createUser({});
+    await repo.addIdentity({ userId: legacy.id, provider: 'google', subject: 'g-legacy' });
+    const res = await service.resolveLogin(
+      pid({ provider: 'google', subject: 'g-legacy', email: 'x@other.example', emailVerified: false }),
+    );
+    expect(res.email).toBe('x@other.example');
+    expect(res.emailVerified).toBe(false);
+  });
+});

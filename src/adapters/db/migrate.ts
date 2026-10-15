@@ -20,10 +20,29 @@ async function loadMigrations(dir: string): Promise<Migration[]> {
   return migrations;
 }
 
+// Ключ сессионной advisory-блокировки миграций (пара int4: «сервис», «миграции»).
+// Ключи-пары не пересекаются с bigint-ключами pg_advisory_xact_lock входа.
+const MIGRATIONS_LOCK = [0x41555448, 1] as const;
+
 // Применяет непринятые миграции из dir по порядку версий, каждую в своей
 // транзакции. Идемпотентно: уже принятые (в schema_migrations) пропускаются.
+// Копии сервиса, стартующие одновременно, ждут друг друга на общей блокировке:
+// вторая видит миграции первой и применяет только недостающие. Ни ожидание,
+// ни сами миграции не ограничены пределами обычного запроса: долгая миграция
+// первой копии не роняет вторую по таймауту.
 // Возвращает число применённых миграций.
 export async function runMigrations(db: Db, dir: string): Promise<number> {
+  return db.withConnection(async (conn) => {
+    await conn.query('select pg_advisory_lock($1::int, $2::int)', [...MIGRATIONS_LOCK]);
+    try {
+      return await applyPending(conn, dir);
+    } finally {
+      await conn.query('select pg_advisory_unlock($1::int, $2::int)', [...MIGRATIONS_LOCK]);
+    }
+  }, { withoutQueryLimits: true });
+}
+
+async function applyPending(db: Db, dir: string): Promise<number> {
   await db.query(
     `create table if not exists schema_migrations (
        version int primary key,

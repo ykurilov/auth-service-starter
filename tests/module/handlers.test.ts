@@ -1,14 +1,8 @@
-import { confirmLogout } from './helpers.js';
+import { confirmLogout, cookieNamesFor } from './helpers.js';
 import { describe, it, expect, vi } from 'vitest';
 import { createAuthHandlers } from '../../module/server/handlers.js';
 import { unseal } from '../../module/server/core/cookie-seal.js';
-import {
-  parseCookies,
-  SESSION_COOKIE,
-  FLOW_COOKIE,
-  SILENT_CHECK_COOKIE,
-  SILENT_CHECK_PARAM,
-} from '../../module/server/cookies.js';
+import { parseCookies, SILENT_CHECK_PARAM } from '../../module/server/cookies.js';
 
 const SECRET = 'секрет-достаточной-длины-32-символа-минимум-1';
 const env = {
@@ -16,6 +10,7 @@ const env = {
   AUTH_APP_URL: 'https://app.test',
   AUTH_COOKIE_SECRET: SECRET,
 };
+const { session: SESSION_COOKIE, flow: FLOW_COOKIE, silentCheck: SILENT_CHECK_COOKIE } = cookieNamesFor(env);
 
 // Собирает Set-Cookie из ответа в карту name->serialized.
 function setCookies(res: Response): string[] {

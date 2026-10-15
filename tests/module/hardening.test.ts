@@ -8,18 +8,20 @@ import { seal, unseal } from '../../module/server/core/cookie-seal.js';
 import { OidcClient } from '../../module/server/core/oidc-client.js';
 import { loadModuleConfig } from '../../module/server/core/config.js';
 import { computeChallenge } from '../../module/server/core/pkce.js';
-import { FLOW_COOKIE, SESSION_COOKIE, LOGOUT_COOKIE, SILENT_CHECK_COOKIE, MAX_LOGIN_FLOWS } from '../../module/server/cookies.js';
-import { confirmLogout } from './helpers.js';
+import { MAX_LOGIN_FLOWS } from '../../module/server/cookies.js';
+import { confirmLogout, cookieNamesFor } from './helpers.js';
 
 const APP = 'https://app.test';
 const SECRET = 'test-only-cookie-key-at-least-32-characters';
 const env = { AUTH_URL: 'https://auth.test', AUTH_APP_URL: APP, AUTH_COOKIE_SECRET: SECRET };
+const { flow: FLOW_COOKIE, session: SESSION_COOKIE, logout: LOGOUT_COOKIE, silentCheck: SILENT_CHECK_COOKIE } = cookieNamesFor(env);
 const jwt = (claims: object) => `e30.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`;
 const tokenBody = () => ({ access_token: jwt({ sub: 'u1', roles: ['reader'] }),
   id_token: jwt({ sub: 'u1', name: 'Обновлённый' }), refresh_token: 'r2', token_type: 'Bearer', expires_in: 900 });
 const ok = (async () => Response.json(tokenBody())) as typeof fetch;
+const LOCAL_SESSION_COOKIE = cookieNamesFor({ ...env, AUTH_APP_URL: 'http://localhost:3000' }).session;
 async function session(ms: number, local = false) {
-  return `${local ? 'auth_session' : SESSION_COOKIE}=${await seal({ user: { id: 'u1', name: 'Прежний', roles: [] },
+  return `${local ? LOCAL_SESSION_COOKIE : SESSION_COOKIE}=${await seal({ user: { id: 'u1', name: 'Прежний', roles: [] },
     accessToken: jwt({ sub: 'u1' }), refreshToken: 'r1', accessTokenExpiresAt: Date.now() + ms }, SECRET)}`;
 }
 const req = (path: string, cookie = '') => new Request(`${APP}${path}`, { headers: { cookie, 'sec-fetch-mode': 'cors' } });
@@ -57,7 +59,7 @@ describe('refresh: временная ошибка сохраняет cookie и 
     expect(denied.response.headers.get('retry-after')).toBe('5');
     expect(denied.response.headers.getSetCookie()).toEqual([]);
     const publicResult = await guard(req('/public', stale));
-    expect(publicResult).toEqual({ kind: 'pass', user: null, setCookies: [] });
+    expect(publicResult).toEqual({ kind: 'pass', user: null, setCookies: [], unavailable: true });
     const handlers = createAuthHandlers({ env, fetch });
     const me = await handlers.GET(req('/api/auth/me', stale));
     expect(me.status).toBe(503);
@@ -106,12 +108,13 @@ describe('refresh: временная ошибка сохраняет cookie и 
 
 describe('сроки и область доверия cookie', () => {
   it('HTTPS не доверяет legacy session и silent mark', async () => {
-    const legacy = await session(900_000, true);
+    const legacy = (await session(900_000, true)).replace(LOCAL_SESSION_COOKIE, 'auth_session');
     expect(await getUser(legacy, { env })).toBeNull();
     const fetch = vi.fn(ok);
     expect((await createAuthHandlers({ env, fetch }).GET(req('/api/auth/me', legacy))).status).toBe(401);
     expect(fetch).not.toHaveBeenCalled();
-    expect(silentCheckDone('auth_silent_checked=1')).toBe(false);
+    for (const name of ['auth_silent_checked', '__Host-auth_silent_checked', 'auth_silent_checked.app.test'])
+      expect(silentCheckDone(`${name}=1`, undefined, { env })).toBe(false);
   });
   it('HTTP localhost использует имена без __Host- и читает свою сессию', async () => {
     const localEnv = { ...env, AUTH_APP_URL: 'http://localhost:3000' };
@@ -119,10 +122,10 @@ describe('сроки и область доверия cookie', () => {
     const handlers = createAuthHandlers({ env: localEnv, fetch: ok });
     const res = await handlers.GET(new Request('http://localhost:3000/api/auth/me', { headers: { cookie } }));
     const line = res.headers.getSetCookie()[0]!;
-    expect(line.startsWith('auth_session=')).toBe(true);
+    expect(line.startsWith('auth_session.localhost=')).toBe(true);
     expect(line).not.toContain('Secure');
     expect((await getUser(line.split(';')[0]!, { env: localEnv }))?.name).toBe('Обновлённый');
-    expect(silentCheckDone('auth_silent_checked=1', undefined, { env: localEnv })).toBe(true);
+    expect(silentCheckDone('auth_silent_checked.localhost=1', undefined, { env: localEnv })).toBe(true);
   });
   it('сервер отвергает просроченный sealed session даже при действующем access', async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-01T00:00:00Z'));

@@ -22,6 +22,8 @@ type HonoNext = () => Promise<void>;
 export type HonoAuthOptions = GuardOptions;
 
 export function createHonoAuth(options: HonoAuthOptions = {}) {
+  // Реестр закрытых сессий общий на процесс: выход через routes гасит и
+  // refresh, летящий в guard.
   const handlers = createAuthHandlers(options);
   const check = createSessionGuard(options);
   // Пользователь, которого защита нашла (или обновила) для этого запроса.

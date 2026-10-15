@@ -79,6 +79,18 @@ function textLayout(p: TextParts): string {
   return [p.title, '', p.intro, '', p.body, '', p.outro, '', p.footer].join('\n');
 }
 
+// Вместо CTA-кнопки со ссылкой — крупный моноширинный блок с кодом, чтобы
+// его было удобно списать. codeHtml уже экранирован.
+function codeBlockHtml(codeHtml: string): string {
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+  <tr>
+    <td align="center" style="padding:8px 0;">
+      <div style="display:inline-block; padding:16px 28px; background-color:#111827; border-radius:10px; font-family:'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; font-size:28px; font-weight:700; letter-spacing:6px; color:#ffffff;">${codeHtml}</div>
+    </td>
+  </tr>
+</table>`;
+}
+
 export interface LoginCodeEmailOptions {
   to: string;
   code: string;
@@ -96,21 +108,11 @@ export function buildLoginCodeEmail(opts: LoginCodeEmailOptions): OutgoingEmail 
   const outro = `Код действует ${opts.ttlMinutes} минут. Если вы не пытались войти — просто проигнорируйте это письмо.`;
   const footer = `Письмо отправлено автоматически сервисом авторизации ${appNameHtml}. Отвечать на него не нужно.`;
 
-  // Вместо CTA-кнопки со ссылкой — крупный моноширинный блок с кодом, чтобы
-  // его было удобно списать.
-  const codeBlock = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-  <tr>
-    <td align="center" style="padding:8px 0;">
-      <div style="display:inline-block; padding:16px 28px; background-color:#111827; border-radius:10px; font-family:'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; font-size:28px; font-weight:700; letter-spacing:6px; color:#ffffff;">${codeHtml}</div>
-    </td>
-  </tr>
-</table>`;
-
   const html = htmlLayout({
     title: subjectHtml,
     preheader: subjectHtml,
     intro,
-    bodyHtml: codeBlock,
+    bodyHtml: codeBlockHtml(codeHtml),
     outro,
     footer,
   });
@@ -123,5 +125,46 @@ export function buildLoginCodeEmail(opts: LoginCodeEmailOptions): OutgoingEmail 
     footer: `Письмо отправлено автоматически сервисом авторизации ${opts.appName}. Отвечать на него не нужно.`,
   });
 
+  return { to: opts.to, subject, html, text };
+}
+
+export interface GoogleLinkCodeEmailOptions extends LoginCodeEmailOptions {
+  // Имя из Google-аккаунта, который привязывают (если Google его прислал).
+  googleName?: string;
+}
+
+// Код для привязки Google-аккаунта со сторонним адресом. Отличается от кода
+// входа: верный код навсегда даёт этому Google-аккаунту вход в аккаунт
+// владельца почты, поэтому письмо прямо говорит, что подтверждает код, и
+// предупреждает не сообщать его никому.
+export function buildGoogleLinkCodeEmail(opts: GoogleLinkCodeEmailOptions): OutgoingEmail {
+  const subject = `${opts.code} — код для привязки Google-аккаунта к «${opts.appName}»`;
+  const account = opts.googleName ? `Google-аккаунт «${opts.googleName}»` : 'Google-аккаунт';
+  const intro =
+    `Кто-то входит в ${opts.appName} через ${account} и указал этот адрес почты. ` +
+    'Код подтверждает, что этот Google-аккаунт ваш и его можно привязать к вашему аккаунту.';
+  const consequence =
+    'После привязки этот Google-аккаунт будет входить в ваш аккаунт без кода из письма.';
+  const outro =
+    `Код действует ${opts.ttlMinutes} минут. Никому не сообщайте код, даже «службе поддержки». ` +
+    'Если вы не привязываете Google-аккаунт — просто проигнорируйте это письмо: без кода привязки не будет.';
+  const footer = `Письмо отправлено автоматически сервисом авторизации ${opts.appName}. Отвечать на него не нужно.`;
+
+  const subjectHtml = escapeHtml(subject);
+  const html = htmlLayout({
+    title: subjectHtml,
+    preheader: subjectHtml,
+    intro: `${escapeHtml(intro)}<br><br>${escapeHtml(consequence)}`,
+    bodyHtml: codeBlockHtml(escapeHtml(opts.code)),
+    outro: escapeHtml(outro),
+    footer: escapeHtml(footer),
+  });
+  const text = textLayout({
+    title: subject,
+    intro: `${intro}\n\n${consequence}`,
+    body: `Код: ${opts.code}`,
+    outro,
+    footer,
+  });
   return { to: opts.to, subject, html, text };
 }

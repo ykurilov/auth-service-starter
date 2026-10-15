@@ -10,4 +10,6 @@ export function middleware(req: NextRequest) {
 }
 
 // /api/auth/* исключён: маршрутам входа и выхода защита не нужна.
-export const config = { matcher: ['/((?!api/auth/|_next/static|_next/image|favicon.ico).*)'] };
+// runtime: 'nodejs' — middleware в одном процессе с route handlers: выход и
+// новый вход гасят refresh, начатый в middleware (на Edge это не так).
+export const config = { runtime: 'nodejs', matcher: ['/((?!api/auth/|_next/static|_next/image|favicon.ico).*)'] };

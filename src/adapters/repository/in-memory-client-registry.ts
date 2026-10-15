@@ -1,7 +1,8 @@
-import type {
-  Client,
-  ClientPatch,
-  ClientWriteStore,
+import {
+  applyClientPatch,
+  type Client,
+  type ClientPatch,
+  type ClientWriteStore,
 } from '../../domain/clients/client.js';
 
 export class InMemoryClientRegistry implements ClientWriteStore {
@@ -30,20 +31,7 @@ export class InMemoryClientRegistry implements ClientWriteStore {
   async update(id: string, patch: ClientPatch): Promise<void> {
     const existing = this.byId.get(id);
     if (!existing) throw new Error(`client not found: ${id}`);
-    const merged: Client = {
-      ...existing,
-      ...(patch.type !== undefined ? { type: patch.type } : {}),
-      ...(patch.redirectUris !== undefined ? { redirectUris: patch.redirectUris } : {}),
-      ...(patch.allowedProviders !== undefined
-        ? { allowedProviders: patch.allowedProviders }
-        : {}),
-    };
-    // postLogoutRedirectUris опционален: обновляем только при явной передаче,
-    // иначе сохраняем прежнее значение (или его отсутствие).
-    if (patch.postLogoutRedirectUris !== undefined) {
-      merged.postLogoutRedirectUris = patch.postLogoutRedirectUris;
-    }
-    this.byId.set(id, InMemoryClientRegistry.copy(merged));
+    this.byId.set(id, InMemoryClientRegistry.copy(applyClientPatch(existing, patch)));
   }
 
   async delete(id: string): Promise<void> {

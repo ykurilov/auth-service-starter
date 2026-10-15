@@ -9,6 +9,7 @@ import {
   clientCreateSchema,
   clientPatchSchema,
 } from '../../../domain/clients/client-validation.js';
+import { ClientAdministration } from '../../../domain/clients/client-administration.js';
 import { deriveClientFromBaseUrl } from '../../../domain/clients/derive-client.js';
 import { checkAdminAuth } from '../admin-auth.js';
 
@@ -19,6 +20,7 @@ export function registerAdminClients(app: FastifyInstance, deps: HttpDeps): void
   // Локальные const сужают типы (поля deps опциональны).
   const store = deps.adminClients;
   const token = deps.config.adminApiToken;
+  const administration = new ClientAdministration(deps.clientLock);
 
   // Проверка Bearer в начале каждого хендлера. Возвращает false и уже
   // отправленный 401, если авторизация не прошла.
@@ -119,32 +121,19 @@ export function registerAdminClients(app: FastifyInstance, deps: HttpDeps): void
       }
       throw err;
     }
-    const existing = await store.findClient(req.params.id);
-    if (!existing) return reply.status(404).send({ error: 'not_found' });
-
-    const type = patch.type ?? existing.type;
-    const providers = patch.allowedProviders ?? existing.allowedProviders;
-    try {
-      assertProvidersAllowedForType(type, providers);
-    } catch (err) {
-      if (err instanceof ClientValidationError) {
-        return reply.status(400).send({ error: 'invalid_request', detail: err.message });
-      }
-      throw err;
+    const result = await administration.update(req.params.id, patch);
+    if (result.status === 'not_found') return reply.status(404).send({ error: 'not_found' });
+    if (result.status === 'invalid') {
+      return reply.status(400).send({ error: 'invalid_request', detail: result.detail });
     }
-    await store.update(req.params.id, patch);
-    if (patch.allowedProviders !== undefined) {
-      await deps.sessions.revokeForClient(req.params.id, patch.allowedProviders);
-    }
-    return reply.status(200).send(await store.findClient(req.params.id));
+    return reply.status(200).send(result.client);
   });
 
   app.delete<{ Params: { id: string } }>('/admin/clients/:id', async (req, reply) => {
     if (!requireAuth(req, reply)) return reply;
-    const found = await store.findClient(req.params.id);
-    if (!found) return reply.status(404).send({ error: 'not_found' });
-    await store.delete(req.params.id);
-    await deps.sessions.revokeForClient(req.params.id);
+    if (!(await administration.remove(req.params.id))) {
+      return reply.status(404).send({ error: 'not_found' });
+    }
     return reply.status(204).send();
   });
 }

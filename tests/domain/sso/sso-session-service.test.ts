@@ -52,4 +52,19 @@ describe('SsoSessionService', () => {
     clock.advance(TTL + 1);
     expect(await service.resolve(rawToken)).toBeNull();
   });
+
+  it('R19: start с прежним токеном отзывает прежнюю сессию', async () => {
+    const { service, store } = makeService();
+    const old = await service.start('u1', auth);
+    const fresh = await service.start('u2', auth, old.rawToken);
+    expect(await service.resolve(old.rawToken)).toBeNull();
+    expect((await store.findByHash(sha256Hex(old.rawToken)))!.revokedAt).not.toBeNull();
+    expect((await service.resolve(fresh.rawToken))!.userId).toBe('u2');
+  });
+
+  it('R19: неизвестный прежний токен не мешает новой сессии', async () => {
+    const { service } = makeService();
+    const fresh = await service.start('u1', auth, 'garbage');
+    expect(await service.resolve(fresh.rawToken)).not.toBeNull();
+  });
 });

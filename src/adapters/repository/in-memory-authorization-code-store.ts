@@ -30,6 +30,13 @@ export class InMemoryAuthorizationCodeStore implements AuthorizationCodeStore {
     return true;
   }
 
+  // Гасит все непогашенные коды клиента (удаление или смена правил клиента).
+  async invalidateForClient(clientId: string, at: Date): Promise<void> {
+    for (const r of this.records) {
+      if (r.clientId === clientId && r.consumedAt === null) r.consumedAt = at;
+    }
+  }
+
   async deleteExpired(before: Date): Promise<number> {
     const cutoff = before.getTime();
     const kept = this.records.filter((r) => r.expiresAt.getTime() >= cutoff);

@@ -1,8 +1,7 @@
 import { loadModuleConfig, type LoadConfigOptions } from './core/config.js';
-import { createSessionManager } from './core/session-manager.js';
+import { createSessionManager, type RetiredRefreshTokens } from './core/session-manager.js';
 import { getUser } from './server.js';
 import type { SessionUser } from './core/session-data.js';
-import { SESSION_COOKIE, clearCookie, isSecureAppUrl } from './cookies.js';
 
 // Защита запросов без привязки к фреймворку: по Web Request решает, пропустить
 // запрос или отказать. Адаптеры (Next.js, Hono) лишь переводят решение на язык
@@ -15,10 +14,11 @@ export interface GuardOptions extends LoadConfigOptions {
 }
 
 // pass — пропустить запрос: user — кто вошёл (null — аноним), setCookies —
-// дописать к ответу приложения (обновлённая или стёртая сессия).
+// дописать к ответу приложения (обновлённая или стёртая сессия);
+// unavailable — сессия есть, но обновить её сейчас не удалось (сбой сервиса).
 // deny — вернуть response вместо ответа приложения (редирект на вход или 401).
 export type GuardDecision =
-  | { kind: 'pass'; user: SessionUser | null; setCookies: string[] }
+  | { kind: 'pass'; user: SessionUser | null; setCookies: string[]; unavailable?: true }
   | { kind: 'deny'; response: Response };
 
 function isProtected(pathname: string, protect: string[]): boolean {
@@ -49,17 +49,19 @@ function unauthenticated(setCookies: string[]): Response {
 }
 
 // Вход сам начнёт с тихой проверки SSO (prompt=none) — см. handlers.ts.
-function toLogin(appUrl: string, next: string, clearCookieStr: string): Response {
+function toLogin(appUrl: string, next: string, setCookies: string[]): Response {
   const url = new URL('/api/auth/login', appUrl);
   url.searchParams.set('next', next);
   const headers = new Headers({ location: url.toString(), vary: DENIED_VARY, 'cache-control': 'no-store' });
-  headers.append('set-cookie', clearCookieStr);
+  for (const c of setCookies) headers.append('set-cookie', c);
   return new Response(null, { status: 302, headers });
 }
 
-export function createSessionGuard(options: GuardOptions = {}) {
+// retired — реестр закрытых сессий; по умолчанию общий на процесс с
+// обработчиками входа того же client_id.
+export function createSessionGuard(options: GuardOptions = {}, retired?: RetiredRefreshTokens) {
   const config = loadModuleConfig(options);
-  const resolve = createSessionManager(options);
+  const resolve = createSessionManager(options, retired);
   const protect = options.protect ?? [];
 
   return async function check(request: Request): Promise<GuardDecision> {
@@ -70,11 +72,14 @@ export function createSessionGuard(options: GuardOptions = {}) {
     };
     const result = await resolve(request.headers.get('cookie'));
     if (result.kind === 'active') return { kind: 'pass', user: result.data.user, setCookies: result.setCookies };
-    if (!isProtected(url.pathname, protect)) return { kind: 'pass', user: null, setCookies: result.setCookies };
+    if (!isProtected(url.pathname, protect)) return result.kind === 'unavailable'
+      ? { kind: 'pass', user: null, setCookies: result.setCookies, unavailable: true }
+      : { kind: 'pass', user: null, setCookies: result.setCookies };
     if (result.kind === 'unavailable') return { kind: 'deny', response: temporaryUnavailable() };
-    const clear = clearCookie(SESSION_COOKIE, isSecureAppUrl(config.appUrl));
+    // Стираем только то, что стёр resolve: закрытую выходом сессию не трогаем,
+    // в браузере уже может быть cookie нового входа.
     return { kind: 'deny', response: isPageNavigation(request)
-      ? toLogin(config.appUrl, url.pathname + url.search, clear) : unauthenticated([clear]) };
+      ? toLogin(config.appUrl, url.pathname + url.search, result.setCookies) : unauthenticated(result.setCookies) };
   };
 }
 

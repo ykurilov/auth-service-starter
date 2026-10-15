@@ -3,12 +3,13 @@ import type { FastifyInstance } from 'fastify';
 import { makeAppFetch } from './inject-fetch.js';
 import { createAuthHandlers } from '../../../module/server/handlers.js';
 import { getUser } from '../../../module/server/server.js';
-import { SESSION_COOKIE, FLOW_COOKIE, SILENT_CHECK_COOKIE } from '../../../module/server/cookies.js';
+import { cookieNamesFor } from '../helpers.js';
 import { extractChallenge } from '../../adapters/http/helpers.js';
 
 const APP = 'https://app.test';
 const SECRET = 'секрет-достаточной-длины-32-символа-минимум-1';
 const env = { AUTH_URL: 'https://auth.example', AUTH_APP_URL: APP, AUTH_COOKIE_SECRET: SECRET };
+const { session: SESSION_COOKIE, flow: FLOW_COOKIE, silentCheck: SILENT_CHECK_COOKIE } = cookieNamesFor(env);
 
 function setCookies(res: Response): string[] {
   return (res.headers as unknown as { getSetCookie(): string[] }).getSetCookie();

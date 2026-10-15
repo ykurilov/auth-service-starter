@@ -67,7 +67,7 @@ describe.skipIf(!process.env.DATABASE_URL_TEST)('real PostgreSQL transactions an
   it('failure inserting the successor rolls back consumption in real PostgreSQL', async () => {
     const initial = await create().start(start());
     const brokenDb: Db = {
-      query: db.query.bind(db), close: async () => {},
+      query: db.query.bind(db), withConnection: db.withConnection.bind(db), close: async () => {},
       withTransaction: (fn) => db.withTransaction((tx) => fn({ ...tx, query: async (sql, params) => {
         if (/insert into refresh_tokens/i.test(sql)) throw new Error('injected successor insert failure');
         return tx.query(sql, params);

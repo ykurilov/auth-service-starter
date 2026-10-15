@@ -15,8 +15,19 @@ export class SsoSessionService {
 
   private slide(now: Date): Date { return new Date(now.getTime() + this.config.ssoTtlSeconds * 1000); }
 
-  async start(userId: string, auth: AuthSnapshot): Promise<{ session: SsoSession; rawToken: string }> {
+  // previousRawToken — SSO-cookie браузера до этого входа: прежняя сессия
+  // отзывается, чтобы в базе не оставалось живых сессий, которые браузер уже
+  // заменил (и которые пережили бы смену аккаунта).
+  async start(
+    userId: string,
+    auth: AuthSnapshot,
+    previousRawToken?: string | null,
+  ): Promise<{ session: SsoSession; rawToken: string }> {
     const now = this.clock.now();
+    if (previousRawToken) {
+      const previous = await this.store.findByHash(sha256Hex(previousRawToken));
+      if (previous && previous.revokedAt === null) await this.store.revoke(previous.id, now);
+    }
     const rawToken = generateSsoToken();
     const session: SsoSession = {
       id: randomUUID(), userId, auth, tokenHash: sha256Hex(rawToken),

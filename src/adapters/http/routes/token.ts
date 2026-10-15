@@ -7,8 +7,10 @@ import { logSecurityEvent } from '../security-log.js';
 import type { IssuedTokens } from '../../../domain/sessions/session-service.js';
 import type { DeviceInfo } from '../../../domain/sessions/device.js';
 import { InvalidGrantError } from '../../../domain/login/errors.js';
+import { grantFitsClient } from '../../../domain/login/grant-policy.js';
 import { sha256Hex } from '../../../domain/shared/hash.js';
 import { RefreshTokenReuseError } from '../../../domain/sessions/errors.js';
+import type { Client } from '../../../domain/clients/client.js';
 
 function device(req: FastifyRequest): DeviceInfo {
   const ua = req.headers['user-agent'];
@@ -34,21 +36,19 @@ const codeSchema = z.object({
 });
 const refreshSchema = z.object({ refresh_token: z.string(), client_id: z.string().optional() });
 
+function allowsProvider(client: Client | null, provider: string): client is Client {
+  return client !== null && client.allowedProviders.includes(provider);
+}
+
 export function registerToken(app: FastifyInstance, deps: HttpDeps): void {
   // Client IDs in requests are public and cannot identify a rate-limit principal.
-  const allowPrincipal = async (key: string, reply: FastifyReply) => {
-    const rl = await deps.rateLimiter.hit(key, 60, 900);
-    if (rl.allowed) return true;
-    reply.header('Retry-After', String(rl.retryAfterSeconds));
-    reply.status(429).send({ error: 'too_many_requests' });
-    return false;
+  const hitPrincipal = (key: string) => deps.rateLimiter.hit(key, 60, 900);
+  const tooManyRequests = (reply: FastifyReply, retryAfterSeconds: number) => {
+    reply.header('Retry-After', String(retryAfterSeconds));
+    return reply.status(429).send({ error: 'too_many_requests' });
   };
-  const checkPolicy = async (clientId: string, provider: string, redirectUri?: string) => {
-    const client = await deps.clients.findClient(clientId);
-    if (!client || !client.allowedProviders.includes(provider) ||
-        (redirectUri !== undefined && !client.redirectUris.includes(redirectUri))) {
-      throw new InvalidGrantError();
-    }
+  const checkPolicy = async (clientId: string, provider: string) => {
+    if (!allowsProvider(await deps.clients.findClient(clientId), provider)) throw new InvalidGrantError();
   };
 
   app.post('/oauth/token', async (req, reply) => {
@@ -60,44 +60,56 @@ export function registerToken(app: FastifyInstance, deps: HttpDeps): void {
     // req.ip respects the server's configured proxy hops, never raw XFF.
     const rule = deps.config.rateLimits.token;
     const rl = await deps.rateLimiter.hit(`token:${ipHash(req)}`, rule.limit, rule.windowSeconds);
-    if (!rl.allowed) {
-      reply.header('Retry-After', String(rl.retryAfterSeconds));
-      return reply.status(429).send({ error: 'too_many_requests' });
-    }
+    if (!rl.allowed) return tooManyRequests(reply, rl.retryAfterSeconds);
     const base = bodySchema.safeParse(req.body);
     if (!base.success) return reply.status(400).send({ error: 'invalid_request' });
     try {
       if (base.data.grant_type === 'authorization_code') {
         const b = codeSchema.parse(req.body);
-        const grant = await deps.codes.redeem({
+        const redeem = {
           code: b.code,
           clientId: b.client_id,
           redirectUri: b.redirect_uri,
           codeVerifier: b.code_verifier,
+        };
+        // Лимит пользователя — до блокировки клиента и транзакции: зависший
+        // лимитер (Redis) не держит ни соединение пула, ни блокировку. Пользователя
+        // берём из кода, не гася его: при отказе по лимиту код остаётся живым.
+        const preview = await deps.codes.inspect(redeem);
+        const limit = await hitPrincipal(
+          `token-user:${sha256Hex(JSON.stringify([preview.clientId, preview.userId]))}`);
+        if (!limit.allowed) return tooManyRequests(reply, limit.retryAfterSeconds);
+        // Гашение кода, проверка политики и создание сессии — под общей
+        // блокировкой клиента: PATCH или DELETE клиента либо дождётся конца
+        // обмена и отзовёт его сессию, либо обмен увидит уже новую политику.
+        // Ответ отправляем после фиксации транзакции.
+        const issued = await deps.clientLock.shared(b.client_id, async ({ client, codes, sessions }) => {
+          const grant = await codes.redeem(redeem);
+          // Отказ по политике — без исключения: погашенный код фиксируется.
+          if (!grantFitsClient(client, grant, b.redirect_uri)) return null;
+          return sessions.start({
+            userId: grant.userId,
+            clientId: grant.clientId,
+            provider: grant.auth.provider,
+            profile: {
+              email: grant.auth.email,
+              emailVerified: grant.auth.emailVerified,
+              name: grant.auth.name,
+            },
+            scope: grant.scope,
+            device: device(req),
+            nonce: grant.nonce,
+          });
         });
-        await checkPolicy(grant.clientId, grant.auth.provider, b.redirect_uri);
-        if (!(await allowPrincipal(`token-user:${sha256Hex(JSON.stringify([grant.clientId, grant.userId]))}`, reply)))
-          return reply;
-        const issued = await deps.sessions.start({
-          userId: grant.userId,
-          clientId: grant.clientId,
-          provider: grant.auth.provider,
-          profile: {
-            email: grant.auth.email,
-            emailVerified: grant.auth.emailVerified,
-            name: grant.auth.name,
-          },
-          scope: grant.scope,
-          device: device(req),
-          nonce: grant.nonce,
-        });
+        if (!issued) throw new InvalidGrantError();
         return reply.status(200).send(toJson(issued));
       }
       if (base.data.grant_type === 'refresh_token') {
         const b = refreshSchema.parse(req.body);
         const session = await deps.sessions.resolveRefreshSession(b.refresh_token);
         await checkPolicy(session.clientId, session.provider);
-        if (!(await allowPrincipal(`token-session:${session.id}`, reply))) return reply;
+        const limit = await hitPrincipal(`token-session:${session.id}`);
+        if (!limit.allowed) return tooManyRequests(reply, limit.retryAfterSeconds);
         if (b.client_id !== undefined && b.client_id !== session.clientId) throw new InvalidGrantError();
         const issued = await deps.sessions.refresh(b.refresh_token, device(req));
         return reply.status(200).send(toJson(issued));

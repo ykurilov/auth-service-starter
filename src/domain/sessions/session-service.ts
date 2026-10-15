@@ -177,12 +177,9 @@ export class SessionService {
     await this.sessions.revokeForClient(clientId, this.clock.now(), allowedProviders);
   }
 
-  // SSO logout приложения: гасим все живые device-сессии пользователя в этом клиенте.
-  async revokeAllForUserClient(userId: string, clientId: string): Promise<void> {
-    const active = await this.sessions.findActiveByUser(userId, this.clock.now());
-    for (const s of active) {
-      if (s.clientId === clientId) await this.sessions.revoke(s.id, this.clock.now());
-    }
+  // Выход во всех приложениях: гасим живые сессии пользователя во всех клиентах.
+  async revokeAllForUser(userId: string): Promise<void> {
+    await this.sessions.revokeForUser(userId, this.clock.now());
   }
 
   async listForUser(userId: string): Promise<Session[]> {

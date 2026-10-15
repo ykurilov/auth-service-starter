@@ -14,6 +14,7 @@ import { EmailCodeProvider } from '../../../src/domain/email-login/email-code-pr
 import { InMemoryIdentityRepository } from '../../../src/adapters/repository/in-memory-identity-repository.js';
 import { InMemoryClientRegistry } from '../../../src/adapters/repository/in-memory-client-registry.js';
 import { InMemoryAuthorizationCodeStore } from '../../../src/adapters/repository/in-memory-authorization-code-store.js';
+import { InMemoryClientLock } from '../../../src/adapters/repository/in-memory-client-lock.js';
 import { InMemoryLoginChallengeStore } from '../../../src/adapters/repository/in-memory-login-challenge-store.js';
 import { InMemorySessionStore } from '../../../src/adapters/repository/in-memory-session-store.js';
 import { InMemoryRefreshTokenStore } from '../../../src/adapters/repository/in-memory-refresh-token-store.js';
@@ -111,7 +112,7 @@ export async function makeTestDeps(opts?: {
   const clock = fakeClock(new Date('2026-07-02T00:00:00Z'));
   const defaultRateLimits: RateLimits = {
     identifyPerIp: { limit: 60, windowSeconds: 900 },
-    codeRequest: { limit: 3, windowSeconds: 900 },
+    codeRequest: { limit: 4, windowSeconds: 900 },
     codeRequestPerEmail: { limit: 8, windowSeconds: 3600 },
     codeRequestPerIp: { limit: 20, windowSeconds: 3600 },
     codeRequestPerEmailDaily: { limit: 20, windowSeconds: 86400 },
@@ -140,7 +141,8 @@ export async function makeTestDeps(opts?: {
   };
   const repo = new InMemoryIdentityRepository(clock);
   const identity = new IdentityService(repo);
-  const codes = new AuthorizationCodeService(new InMemoryAuthorizationCodeStore(), clock, 60);
+  const codeStore = new InMemoryAuthorizationCodeStore();
+  const codes = new AuthorizationCodeService(codeStore, clock, 60);
   // Один и тот же реестр используется LoginService и роутом /logout — так тесты
   // видят те же клиенты (redirectUris, postLogoutRedirectUris) в обоих местах.
   const clients = new InMemoryClientRegistry(opts?.clients ?? [DEFAULT_CLIENT]);
@@ -185,6 +187,8 @@ export async function makeTestDeps(opts?: {
     clients,
     // Тот же in-memory-реестр обслуживает и Admin API (он реализует ClientWriteStore).
     adminClients: clients,
+    clientLock: new InMemoryClientLock(clients, { codes, sessions },
+      (clientId) => codeStore.invalidateForClient(clientId, clock.now())),
     rateLimiter: new InMemoryRateLimiter(clock),
     otpRateLimiter: new InMemoryRateLimiter(clock),
     mailer,

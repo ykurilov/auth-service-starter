@@ -7,6 +7,10 @@ export interface ResolveLoginResult {
   user: User;
   createdUser: boolean;
   linkedIdentity: boolean;
+  // Адрес для id_token и SSO-сессии — по состоянию базы после записи, а не
+  // по ответу провайдера (см. loginEmailOf).
+  email?: string;
+  emailVerified: boolean;
 }
 
 // Новая личность принесла адрес почты, владение которым провайдер не доказал
@@ -62,7 +66,7 @@ export class IdentityService {
         );
       }
       await this.attachEmail(repo, user, pid, email);
-      return { user, createdUser: false, linkedIdentity: false };
+      return { user, createdUser: false, linkedIdentity: false, ...(await this.loginEmailOf(repo, user, email)) };
     }
 
     // 2. Первый вход этой личности. Адрес без доказанного владения не даёт
@@ -75,7 +79,28 @@ export class IdentityService {
 
     await repo.addIdentity({ userId: user.id, provider: pid.provider, subject: pid.subject });
     await this.attachEmail(repo, user, pid, email);
-    return { user, createdUser, linkedIdentity: !createdUser };
+    return { user, createdUser, linkedIdentity: !createdUser, ...(await this.loginEmailOf(repo, user, email)) };
+  }
+
+  // Какой адрес отдать приложению после входа. Адрес этого входа — если он
+  // подтверждён у пользователя. Иначе (уже привязанный Google принёс адрес
+  // без доказанного владения или адрес, подтверждённый у другого человека) —
+  // прежний подтверждённый адрес пользователя: личность доказана привязкой,
+  // а непроверенный адрес в токен не попадает. Подтверждённых нет совсем —
+  // адрес входа честно с email_verified=false.
+  private async loginEmailOf(
+    repo: IdentityRepository,
+    user: User,
+    email: string | undefined,
+  ): Promise<{ email?: string; emailVerified: boolean }> {
+    const emails = await repo.findEmailsForUser(user.id);
+    const current = email !== undefined ? emails.find((e) => e.email === email) : undefined;
+    if (current?.verified) return { email: current.email, emailVerified: true };
+    const earliestVerified = emails
+      .filter((e) => e.verified)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
+    if (earliestVerified) return { email: earliestVerified.email, emailVerified: true };
+    return email !== undefined ? { email, emailVerified: false } : { emailVerified: false };
   }
 
   // Подтверждённым адрес становится только у одного пользователя. Если он уже

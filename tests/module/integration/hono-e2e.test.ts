@@ -1,10 +1,9 @@
-import { confirmLogout } from '../helpers.js';
+import { confirmLogout, cookieNamesFor } from '../helpers.js';
 import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
 import type { FastifyInstance } from 'fastify';
 import { makeAppFetch } from './inject-fetch.js';
 import { createHonoAuth } from '../../../module/server/hono.js';
-import { SESSION_COOKIE, FLOW_COOKIE } from '../../../module/server/cookies.js';
 import { extractChallenge } from '../../adapters/http/helpers.js';
 
 // Приложение Hono с адаптером против живого сервиса в процессе: обычный вход,
@@ -13,6 +12,7 @@ import { extractChallenge } from '../../adapters/http/helpers.js';
 const APP = 'https://app.test';
 const SECRET = 'секрет-достаточной-длины-32-символа-минимум-1';
 const env = { AUTH_URL: 'https://auth.example', AUTH_APP_URL: APP, AUTH_COOKIE_SECRET: SECRET };
+const { session: SESSION_COOKIE, flow: FLOW_COOKIE } = cookieNamesFor(env);
 const fetchMode = { 'sec-fetch-mode': 'cors' };
 
 function setCookies(res: Response): string[] {

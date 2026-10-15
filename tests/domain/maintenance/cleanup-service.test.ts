@@ -19,6 +19,7 @@ function makeCode(over: Partial<AuthorizationCodeRecord> = {}): AuthorizationCod
     id: over.id ?? 'code-1',
     codeHash: over.codeHash ?? `hash-${over.id ?? '1'}`,
     clientId: 'app1',
+    clientType: 'internal',
     userId: 'u1',
     redirectUri: 'https://app1/cb',
     codeChallenge: 'chal',

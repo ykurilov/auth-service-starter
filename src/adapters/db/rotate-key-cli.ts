@@ -1,8 +1,9 @@
 import { createPool } from './pool.js';
-import { runRotate } from './rotate-key.js';
+import { describeRotation, runRotate } from './rotate-key.js';
 
 // Тонкий CLI: читает DATABASE_URL, ротирует ключ подписи и закрывает пул.
-// Приватный ключ/PEM не печатается — только kid нового ключа и счётчик retired.
+// Приватный ключ/PEM не печатается — только kid нового ключа и kid ключей,
+// отправленных в retired (их передают в revoke-key при утечке).
 // Запускается на собранном dist (см. npm-скрипт "rotate-key").
 async function main(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;
@@ -12,10 +13,7 @@ async function main(): Promise<void> {
   }
   const db = createPool(databaseUrl);
   try {
-    const r = await runRotate(db, new Date());
-    console.log(
-      `Новый активный ключ: ${r.newKid}; отправлено в retired: ${r.retiredCount}`,
-    );
+    console.log(describeRotation(await runRotate(db, new Date())));
   } finally {
     await db.close();
   }

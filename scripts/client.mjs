@@ -13,8 +13,15 @@ try {
   const { values } = parseArgs({ args: rest, options: {
     id: { type: 'string' }, external: { type: 'boolean' }, 'email-only': { type: 'boolean' },
   } });
-  const issuer = new URL(process.env.PUBLIC_ISSUER_URL);
-  if (issuer.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(issuer.hostname)) throw new Error('Для удалённого сервиса требуется HTTPS');
+  // CLI обращается к самому процессу сервиса: публичный адрес может ещё не
+  // работать до настройки nginx и сертификата. ADMIN_API_URL переопределяет
+  // адрес. На хосте сервис опубликован на HOST_PORT; внутри контейнера (образ
+  // ставит AUTH_SERVICE_CONTAINER=1) тот же .env содержит HOST_PORT, но
+  // процесс слушает PORT.
+  const inContainer = process.env.AUTH_SERVICE_CONTAINER === '1';
+  const port = (!inContainer && process.env.HOST_PORT) || process.env.PORT || 3016;
+  const adminApi = new URL(process.env.ADMIN_API_URL || `http://127.0.0.1:${port}`);
+  if (adminApi.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(adminApi.hostname)) throw new Error('Для удалённого сервиса требуется HTTPS');
   if (!process.env.ADMIN_API_TOKEN) throw new Error('ADMIN_API_TOKEN не задан');
   let body;
   if (action === 'add') {
@@ -28,7 +35,7 @@ try {
       postLogoutRedirectUris: [base.origin + '/'], allowedProviders: values.external || values['email-only'] ? ['email'] : ['email', 'google'] };
   }
   const path = action === 'delete' ? '/admin/clients/' + encodeURIComponent(value) : '/admin/clients';
-  const response = await fetch(new URL(path, issuer), {
+  const response = await fetch(new URL(path, adminApi), {
     method: action === 'add' ? 'POST' : action === 'delete' ? 'DELETE' : 'GET',
     headers: { authorization: 'Bearer ' + process.env.ADMIN_API_TOKEN, ...(body ? { 'content-type': 'application/json' } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}),

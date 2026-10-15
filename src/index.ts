@@ -51,6 +51,9 @@ import { PgSessionStore } from './adapters/repository/pg/pg-session-store.js';
 import { PgRefreshTokenStore } from './adapters/repository/pg/pg-refresh-token-store.js';
 import { PgSsoSessionStore } from './adapters/repository/pg/pg-sso-session-store.js';
 import { PgAuthorizationCodeStore } from './adapters/repository/pg/pg-authorization-code-store.js';
+import { PgClientLock } from './adapters/repository/pg/pg-client-lock.js';
+import { InMemoryClientLock } from './adapters/repository/in-memory-client-lock.js';
+import type { ClientLock } from './domain/clients/client-lock.js';
 import { PgEmailSecretStore } from './adapters/repository/pg/pg-email-secret-store.js';
 import { CleanupService } from './domain/maintenance/cleanup-service.js';
 import type { IdentityRepository } from './domain/identity/identity-repository.js';
@@ -100,6 +103,8 @@ export async function bootstrap(
   let identityRepo: IdentityRepository;
   let clientRegistry: ClientRegistry;
   let authCodeStore: AuthorizationCodeStore;
+  // Только без БД: гашение кодов клиента для InMemoryClientLock.
+  let inMemoryCodeStore: InMemoryAuthorizationCodeStore | undefined;
   let sessionStore: SessionStore;
   let refreshTokenStore: RefreshTokenStore;
   let ssoSessionStore: SsoSessionStore;
@@ -115,6 +120,8 @@ export async function bootstrap(
       : createPool(config.databaseUrl, (err) =>
           logger.error({ err }, 'обрыв idle-соединения в пуле Postgres'),
         );
+    // Миграции идут под общей advisory-блокировкой: копии, стартующие
+    // одновременно, применяют их по очереди, а не падают друг на друге.
     if (config.migrateOnBoot) {
       const applied = await runMigrations(db, 'migrations');
       logger.info({ applied }, 'migrations applied');
@@ -192,7 +199,8 @@ export async function bootstrap(
     // Реестр клиентов из конфигурации (CLIENTS_JSON). Один экземпляр обслуживает
     // и LoginService (валидация /authorize), и HttpDeps.clients (роут /logout).
     clientRegistry = new InMemoryClientRegistry(config.clients);
-    authCodeStore = new InMemoryAuthorizationCodeStore();
+    inMemoryCodeStore = new InMemoryAuthorizationCodeStore();
+    authCodeStore = inMemoryCodeStore;
     const inMemoryRefreshTokens = new InMemoryRefreshTokenStore();
     sessionStore = new InMemorySessionStore(inMemoryRefreshTokens);
     refreshTokenStore = inMemoryRefreshTokens;
@@ -223,13 +231,28 @@ export async function bootstrap(
   const authCodeService = new AuthorizationCodeService(authCodeStore, systemClock, 60);
   const loginService = new LoginService(clientRegistry, identityService, authCodeService);
 
+  const sessionConfig = { refreshTtlSeconds: config.refreshTtlSeconds };
   const sessionService = new SessionService(
     sessionStore,
     refreshTokenStore,
     tokenService,
     systemClock,
-    { refreshTtlSeconds: config.refreshTtlSeconds },
+    sessionConfig,
   );
+
+  // Обмен кода и изменение клиента сериализуются блокировкой клиента. В БД
+  // сервисы внутри неё работают через хранилища поверх той же транзакции.
+  const clientLock: ClientLock = db
+    ? new PgClientLock(db, (tx) => ({
+        codes: new AuthorizationCodeService(new PgAuthorizationCodeStore(tx), systemClock, 60),
+        sessions: new SessionService(new PgSessionStore(tx), new PgRefreshTokenStore(tx),
+          tokenService, systemClock, sessionConfig),
+      }))
+    : new InMemoryClientLock(
+        clientRegistry as ClientWriteStore,
+        { codes: authCodeService, sessions: sessionService },
+        (clientId) => inMemoryCodeStore!.invalidateForClient(clientId, systemClock.now()),
+      );
 
   // Боевой путь — Resend (нужны ключ и адрес отправителя). Иначе LogMailer:
   // dev/тест-дефолт, письма (коды входа) уходят в лог, не отправляются.
@@ -293,6 +316,7 @@ export async function bootstrap(
     // И Pg-, и in-memory-реестры реализуют ClientWriteStore; переменная объявлена
     // как ClientRegistry, поэтому сужаем тип приведением.
     adminClients: clientRegistry as ClientWriteStore,
+    clientLock,
     rateLimiter,
     otpRateLimiter,
   };

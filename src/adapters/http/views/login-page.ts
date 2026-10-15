@@ -1,5 +1,5 @@
 import { escapeHtml } from '../html.js';
-import { hiddenFields, type OidcParams } from './oidc-params.js';
+import { authorizeUrl, hiddenFields, type OidcParams } from './oidc-params.js';
 import { pageLayout } from './page-layout.js';
 
 // Identifier-first вход: сначала только почта, затем одноразовый код из письма
@@ -27,19 +27,6 @@ export interface LoginPageInput {
 
 const field = (label: string, input: string): string =>
   `<label class="field"><span class="label">${label}</span>${input}</label>`;
-
-function authorizeUrl(p: OidcParams, promptLogin = false): string {
-  const q = new URLSearchParams();
-  q.set('client_id', p.client_id);
-  q.set('redirect_uri', p.redirect_uri);
-  q.set('code_challenge', p.code_challenge);
-  q.set('code_challenge_method', p.code_challenge_method);
-  q.set('scope', p.scope);
-  if (p.state !== undefined) q.set('state', p.state);
-  if (p.nonce !== undefined) q.set('nonce', p.nonce);
-  if (promptLogin) q.set('prompt', 'login');
-  return `/authorize?${q.toString()}`;
-}
 
 // Ссылка «Войти с другой почтой»: возвращает на первый шаг, сохранив
 // OIDC-параметры. prompt=login не даёт SSO-куке увести на экран согласия.
@@ -86,8 +73,13 @@ function googleSignIn(clientId: string, nonce: string, hf: string, csrfField: st
 
 // Успешный вход заменяет текущую запись формы в истории. Нативный POST остаётся
 // fallback без JavaScript; при ошибке код можно исправить на той же странице.
+// Запись истории ведёт на экран ввода почты (prompt=login): обновление
+// страницы посреди входа не уводит на экран согласия по SSO-cookie.
+// Ответ не JSON (страница 429 или ошибки формы) — понятная ошибка вместо
+// сбоя разбора. restartTo — попытка исчерпана: форма кода больше не нужна,
+// показываем переход к вводу почты.
 function codeFormNavigation(p: OidcParams): string {
-  const safeRefreshUrl = JSON.stringify(authorizeUrl(p));
+  const safeRefreshUrl = JSON.stringify(restartUrl(p));
   return `<script>
     (function () {
       if (window.history && window.history.replaceState) {
@@ -96,6 +88,10 @@ function codeFormNavigation(p: OidcParams): string {
       var form = document.getElementById('code-form');
       var error = document.getElementById('code-submit-error');
       if (!form || !error || !window.fetch) return;
+      function showError(text) {
+        error.textContent = text;
+        error.hidden = false;
+      }
       form.addEventListener('submit', async function (event) {
         event.preventDefault();
         var button = form.querySelector('button[type="submit"]');
@@ -111,16 +107,32 @@ function codeFormNavigation(p: OidcParams): string {
             },
             body: new URLSearchParams(new FormData(form)).toString()
           });
+          var type = response.headers.get('content-type') || '';
+          if (type.indexOf('application/json') === -1) {
+            showError(response.status === 429
+              ? 'Слишком много попыток — подождите немного и попробуйте ещё раз'
+              : 'Не удалось войти, обновите страницу и попробуйте ещё раз');
+            return;
+          }
           var data = await response.json();
+          if (typeof data.restartTo === 'string') {
+            showError(data.error || 'Попытки закончились — начните вход заново');
+            form.hidden = true;
+            var resend = document.getElementById('code-resend');
+            if (resend) resend.hidden = true;
+            var restart = document.getElementById('code-restart');
+            var link = document.getElementById('code-restart-link');
+            if (link) link.href = data.restartTo;
+            if (restart) restart.hidden = false;
+            return;
+          }
           if (!response.ok || typeof data.redirectTo !== 'string') {
-            error.textContent = data.error || 'Не удалось войти, попробуйте ещё раз';
-            error.hidden = false;
+            showError(data.error || 'Не удалось войти, попробуйте ещё раз');
             return;
           }
           window.location.replace(data.redirectTo);
         } catch (_) {
-          error.textContent = 'Не удалось войти, проверьте соединение и попробуйте ещё раз';
-          error.hidden = false;
+          showError('Не удалось войти, проверьте соединение и попробуйте ещё раз');
         } finally {
           if (button) button.disabled = false;
         }
@@ -157,13 +169,16 @@ export function loginPage(input: LoginPageInput): string {
           ${field('Код из письма', `<input class="input" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>`)}
           <button type="submit" class="btn btn-primary">Войти</button>
         </form>
-        <div class="auth-divider">не пришёл?</div>
-        <form method="post" action="/authorize/code/request">
-          ${hf}
-          ${csrfField}
-          ${challengeField}
-          <button type="submit" class="btn">Отправить код ещё раз</button>
-        </form>
+        <p id="code-restart" hidden><a id="code-restart-link" class="btn btn-primary" href="${escapeHtml(restartUrl(p))}">Ввести почту заново</a></p>
+        <div id="code-resend">
+          <div class="auth-divider">не пришёл?</div>
+          <form method="post" action="/authorize/code/request">
+            ${hf}
+            ${csrfField}
+            ${challengeField}
+            <button type="submit" class="btn">Отправить код ещё раз</button>
+          </form>
+        </div>
         ${restart}
         ${codeFormNavigation(p)}`;
       break;

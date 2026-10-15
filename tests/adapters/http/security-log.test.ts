@@ -5,6 +5,7 @@ import { makeTestDeps, authorizeForm, loginWithCode, startCodeLogin, TEST_VERIFI
 import { SessionService } from '../../../src/domain/sessions/session-service.js';
 import { InMemorySessionStore } from '../../../src/adapters/repository/in-memory-session-store.js';
 import { InMemoryRefreshTokenStore } from '../../../src/adapters/repository/in-memory-refresh-token-store.js';
+import { InMemoryClientLock } from '../../../src/adapters/repository/in-memory-client-lock.js';
 import { advanceableClock } from '../../helpers/advanceable-clock.js';
 import { sha256Hex } from '../../../src/domain/shared/hash.js';
 
@@ -42,6 +43,9 @@ describe('журнал событий безопасности', () => {
     const refreshStore = new InMemoryRefreshTokenStore();
     deps.sessions = new SessionService(new InMemorySessionStore(refreshStore), refreshStore,
       deps.tokens, clock, { refreshTtlSeconds: deps.config.refreshTtlSeconds });
+    // Обмен кода создаёт сессию через блокировку клиента — с тем же сервисом сессий.
+    deps.clientLock = new InMemoryClientLock(deps.adminClients!, { codes: deps.codes, sessions: deps.sessions },
+      async () => {});
     const app = buildServer(deps);
     const code = await loginWithCode(app);
 

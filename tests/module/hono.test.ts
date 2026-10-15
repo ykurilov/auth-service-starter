@@ -1,9 +1,8 @@
-import { confirmLogout } from './helpers.js';
+import { confirmLogout, cookieNamesFor } from './helpers.js';
 import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
 import { createHonoAuth } from '../../module/server/hono.js';
 import { seal } from '../../module/server/core/cookie-seal.js';
-import { SESSION_COOKIE, FLOW_COOKIE } from '../../module/server/cookies.js';
 
 // Адаптер Hono на настоящем приложении Hono: маршруты входа, защита и
 // пользователь в обработчике.
@@ -11,6 +10,7 @@ import { SESSION_COOKIE, FLOW_COOKIE } from '../../module/server/cookies.js';
 const APP = 'https://app.test';
 const SECRET = 'секрет-достаточной-длины-32-символа-минимум-1';
 const env = { AUTH_URL: 'https://auth.test', AUTH_APP_URL: APP, AUTH_COOKIE_SECRET: SECRET };
+const { session: SESSION_COOKIE, flow: FLOW_COOKIE } = cookieNamesFor(env);
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const b64 = (o: unknown) =>
@@ -21,11 +21,14 @@ function fakeJwt(payload: Record<string, unknown>): string {
 function setCookies(res: Response): string[] {
   return (res.headers as unknown as { getSetCookie(): string[] }).getSetCookie();
 }
+// Выход помечает refresh-токен закрытым на весь процесс, поэтому у каждой
+// сессии свой токен, как в жизни.
+let sessionSequence = 0;
 async function sessionCookie(expiresInMs: number) {
   const data = {
     user: { id: 'u1', name: 'Старое имя', roles: [] },
     accessToken: fakeJwt({ sub: 'u1' }),
-    refreshToken: 'r1',
+    refreshToken: `r1-${++sessionSequence}`,
     accessTokenExpiresAt: Date.now() + expiresInMs,
   };
   return `${SESSION_COOKIE}=${await seal(data, SECRET)}`;

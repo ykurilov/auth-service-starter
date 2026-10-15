@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { loginPage } from '../../../src/adapters/http/views/login-page.js';
 import { consentPage } from '../../../src/adapters/http/views/consent-page.js';
 import { errorPage } from '../../../src/adapters/http/views/error-page.js';
@@ -49,14 +49,15 @@ describe('login-page', () => {
     expect(html).toContain('.auth-main .alert[hidden] { display: none !important; }');
   });
 
-  it('заменяет POST-адрес экрана кода на безопасный GET для обновления страницы', () => {
+  it('заменяет POST-адрес экрана кода на безопасный GET с prompt=login для обновления страницы', () => {
     const html = loginPage({ params, mode: 'code', email: 'a@b.co' });
     const call = html.match(/window\.history\.replaceState\(null, '', ("[^"]+")\)/);
     expect(call?.[1]).toBeDefined();
     const refreshUrl = JSON.parse(call?.[1] ?? '""') as string;
     expect(refreshUrl).toContain('/authorize?client_id=app');
     expect(refreshUrl).toContain('state=s%261');
-    expect(refreshUrl).not.toContain('prompt=login');
+    // Обновление посреди входа ведёт к вводу почты, а не на согласие по SSO.
+    expect(refreshUrl).toContain('prompt=login');
   });
 
   it('ссылка «с другой почтой» ведёт на /authorize с prompt=login и state', () => {
@@ -74,19 +75,19 @@ describe('login-page', () => {
 
 describe('consent-page', () => {
   it('показывает email, форму confirm и скрытый csrf', () => {
-    const html = consentPage({ params, email: 'a@b.co', csrfToken: 'tok123' });
+    const html = consentPage({ params, email: 'a@b.co', csrfToken: 'tok123', expectedUser: 'u-1' });
     expect(html).toContain('a@b.co');
     expect(html).toContain('/authorize/confirm');
     expect(html).toContain('name="csrf" value="tok123"');
   });
 
   it('содержит кнопку входа другим аккаунтом с prompt=login', () => {
-    const html = consentPage({ params, email: 'a@b.co', csrfToken: 'tok123' });
+    const html = consentPage({ params, email: 'a@b.co', csrfToken: 'tok123', expectedUser: 'u-1' });
     expect(html).toContain('name="prompt" value="login"');
   });
 
   it('экранирует email со спецсимволом', () => {
-    const html = consentPage({ params, email: 'a&<b@b.co', csrfToken: 'tok123' });
+    const html = consentPage({ params, email: 'a&<b@b.co', csrfToken: 'tok123', expectedUser: 'u-1' });
     expect(html).toContain('a&amp;&lt;b@b.co');
     expect(html).not.toContain('a&<b@b.co');
   });
@@ -132,5 +133,96 @@ describe('logged-out-page', () => {
   it('содержит текст о выходе', () => {
     const html = loggedOutPage();
     expect(html).toContain('вышли');
+  });
+});
+
+// R11: исполняем встроенный скрипт экрана ввода кода на подставном «браузере»:
+// только то, что скрипт трогает (history, fetch, location и элементы по id).
+describe('login-page: скрипт формы кода', () => {
+  type Handler = (event: { preventDefault(): void }) => Promise<void>;
+
+  function runCodeScript(fetchImpl: (url: string, init: unknown) => Promise<unknown>) {
+    const html = loginPage({ params, mode: 'code', email: 'a@b.co', challenge: 'h1' });
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
+    const script = scripts.find((x) => x.includes('code-form'));
+    if (!script) throw new Error('нет скрипта формы кода');
+    let submit: Handler | undefined;
+    const button = { disabled: false };
+    const el = {
+      'code-form': {
+        action: '/authorize/code/verify',
+        hidden: false,
+        querySelector: () => button,
+        addEventListener: (_: string, fn: Handler) => { submit = fn; },
+      },
+      'code-submit-error': { textContent: '', hidden: true },
+      'code-resend': { hidden: false },
+      'code-restart': { hidden: true },
+      'code-restart-link': { href: '' },
+    } as Record<string, Record<string, unknown>>;
+    const replaceState = vi.fn();
+    const location = { replace: vi.fn() };
+    const window = { history: { replaceState }, fetch: fetchImpl, location };
+    const document = { getElementById: (id: string) => el[id] ?? null };
+    class FormData { *[Symbol.iterator]() { yield ['code', '1']; } }
+    new Function('window', 'document', 'fetch', 'FormData', script)(window, document, fetchImpl, FormData);
+    return {
+      el,
+      replaceState,
+      location,
+      submit: () => submit!({ preventDefault() {} }),
+    };
+  }
+
+  function response(status: number, contentType: string, body: unknown) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? contentType : null) },
+      json: vi.fn(async () => {
+        if (!contentType.includes('application/json')) throw new SyntaxError('not json');
+        return body;
+      }),
+    };
+  }
+
+  it('replaceState сохраняет prompt=login', () => {
+    const page = runCodeScript(async () => response(200, 'application/json', {}));
+    const url = new URL(page.replaceState.mock.calls[0]![2] as string, 'https://auth.example');
+    expect(url.pathname).toBe('/authorize');
+    expect(url.searchParams.get('prompt')).toBe('login');
+  });
+
+  it('ответ не JSON (429 страница) → понятная ошибка, json() не вызывается', async () => {
+    const res = response(429, 'text/html; charset=utf-8', null);
+    const page = runCodeScript(async () => res);
+    await page.submit();
+    expect(res.json).not.toHaveBeenCalled();
+    expect(page.el['code-submit-error']!.hidden).toBe(false);
+    expect(page.el['code-submit-error']!.textContent).toContain('Слишком много попыток');
+  });
+
+  it('сигнал restartTo → форма кода скрыта, показана ссылка на ввод почты', async () => {
+    const page = runCodeScript(async () =>
+      response(401, 'application/json; charset=utf-8', {
+        error: 'Код истёк или попытки закончились — запросите новый код',
+        restartTo: '/authorize?client_id=app&prompt=login',
+      }),
+    );
+    await page.submit();
+    expect(page.el['code-submit-error']!.textContent).toContain('попытки закончились');
+    expect(page.el['code-form']!.hidden).toBe(true);
+    expect(page.el['code-resend']!.hidden).toBe(true);
+    expect(page.el['code-restart']!.hidden).toBe(false);
+    expect(page.el['code-restart-link']!.href).toBe('/authorize?client_id=app&prompt=login');
+    expect(page.location.replace).not.toHaveBeenCalled();
+  });
+
+  it('успех → переход по redirectTo', async () => {
+    const page = runCodeScript(async () =>
+      response(200, 'application/json', { redirectTo: 'https://app.example/cb?code=x' }),
+    );
+    await page.submit();
+    expect(page.location.replace).toHaveBeenCalledWith('https://app.example/cb?code=x');
   });
 });

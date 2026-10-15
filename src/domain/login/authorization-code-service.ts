@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Clock } from '../../ports/clock.js';
 import type {
+  AuthorizationCodeRecord,
   AuthorizationCodeStore,
   AuthorizationGrant,
   AuthSnapshot,
@@ -8,9 +9,12 @@ import type {
 import { verifyPkceS256 } from './pkce.js';
 import { InvalidGrantError } from './errors.js';
 import { sha256Hex } from '../shared/hash.js';
+import type { ClientType } from '../clients/client.js';
 
 export interface IssueParams {
   clientId: string;
+  // Тип клиента в момент решения о согласии (internal — без экрана согласия).
+  clientType: ClientType;
   userId: string;
   redirectUri: string;
   codeChallenge: string;
@@ -40,6 +44,7 @@ export class AuthorizationCodeService {
       id: randomUUID(),
       codeHash: sha256Hex(code),
       clientId: params.clientId,
+      clientType: params.clientType,
       userId: params.userId,
       redirectUri: params.redirectUri,
       codeChallenge: params.codeChallenge,
@@ -52,24 +57,39 @@ export class AuthorizationCodeService {
     return code;
   }
 
+  // Проверяет код (клиент, redirect_uri, PKCE), не гася его. Нужна, чтобы узнать
+  // пользователя до обмена, например для лимита. Любой провал -> InvalidGrantError.
+  async inspect(params: RedeemParams): Promise<AuthorizationGrant> {
+    return toGrant(await this.verified(params));
+  }
+
   // Любой провал -> InvalidGrantError (не раскрываем, какая проверка не прошла).
   async redeem(params: RedeemParams): Promise<AuthorizationGrant> {
-    const now = this.clock.now();
-    const record = await this.store.findActiveByHash(sha256Hex(params.code), now);
+    const record = await this.verified(params);
+    // Атомарное гашение: при гонке двух обменов выиграет только один.
+    if (!(await this.store.consume(record.id, this.clock.now()))) throw new InvalidGrantError();
+    return toGrant(record);
+  }
+
+  private async verified(params: RedeemParams): Promise<AuthorizationCodeRecord> {
+    const record = await this.store.findActiveByHash(sha256Hex(params.code), this.clock.now());
     if (!record) throw new InvalidGrantError();
     if (record.clientId !== params.clientId) throw new InvalidGrantError();
     if (record.redirectUri !== params.redirectUri) throw new InvalidGrantError();
     if (!verifyPkceS256(params.codeVerifier, record.codeChallenge)) {
       throw new InvalidGrantError();
     }
-    // Атомарное гашение: при гонке двух обменов выиграет только один.
-    if (!(await this.store.consume(record.id, now))) throw new InvalidGrantError();
-    return {
-      userId: record.userId,
-      clientId: record.clientId,
-      scope: record.scope,
-      nonce: record.nonce,
-      auth: record.auth,
-    };
+    return record;
   }
+}
+
+function toGrant(record: AuthorizationCodeRecord): AuthorizationGrant {
+  return {
+    userId: record.userId,
+    clientId: record.clientId,
+    clientType: record.clientType,
+    scope: record.scope,
+    nonce: record.nonce,
+    auth: record.auth,
+  };
 }

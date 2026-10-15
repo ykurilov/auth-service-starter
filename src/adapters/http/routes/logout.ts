@@ -61,9 +61,11 @@ export function registerLogout(app: FastifyInstance, deps: HttpDeps): void {
 
     const token = readSsoCookie(req, deps.config);
     const session = token ? await deps.sso.resolve(token) : null;
+    // Экран обещает выход во всех приложениях: гасим SSO-сессию браузера и
+    // сессии пользователя во всех клиентах, а не только в том, откуда пришёл выход.
     if (session) {
       await deps.sso.revoke(session.id);
-      await deps.sessions.revokeAllForUserClient(session.userId, client.id);
+      await deps.sessions.revokeAllForUser(session.userId);
     }
     clearSsoCookie(reply, deps.config);
 

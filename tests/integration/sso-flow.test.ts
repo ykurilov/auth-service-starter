@@ -126,6 +126,7 @@ describe('SSO flow (несколько приложений)', () => {
       payload: new URLSearchParams({
         ...oidc('app2', 'https://app2.example/cb'),
         csrf: csrfField,
+        expected_user: /name="expected_user" value="([^"]+)"/.exec(getRes.body)?.[1] ?? '',
       }).toString(),
       headers: { ...FORM, cookie: `sso=${sso}; csrf=${csrfCookie}` },
     });

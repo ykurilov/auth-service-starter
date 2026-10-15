@@ -87,18 +87,37 @@ function userCount(deps: TestDeps): number {
 }
 
 describe('кнопка Google на странице входа', () => {
-  it('ограничивает создание nonce на GET до записи в хранилище', async () => {
+  it('R02: лимит nonce исчерпан → страница входа без кнопки Google, вход по почте работает', async () => {
     const deps = await makeTestDeps({ clients: [GOOGLE_CLIENT] });
     fakeGoogle(deps);
     deps.config.rateLimits.identifyPerIp.limit = 1;
     const issue = vi.spyOn(deps.googleNonces!, 'issue');
     const app = buildServer(deps);
     try {
-      expect((await app.inject({ method: 'GET', url: authorizeUrl })).statusCode).toBe(200);
-      const blocked = await app.inject({ method: 'GET', url: authorizeUrl });
+      const first = await app.inject({ method: 'GET', url: authorizeUrl });
+      expect(first.body).toContain('google-btn');
+      const limited = await app.inject({ method: 'GET', url: authorizeUrl, headers: { cookie: `csrf=${TEST_CSRF}` } });
+      expect(limited.statusCode).toBe(200);
+      expect(limited.body).toContain('name="email"');
+      expect(limited.body).not.toContain('google-btn');
+      expect(issue).toHaveBeenCalledTimes(1);
+      // Вход по почте с той же страницы не задет лимитом nonce.
+      expect(extractChallenge((await app.inject({
+        method: 'POST', url: '/authorize/identify', payload: form({ email: 'u@x.com', credential: '' }), headers: FORM_HEADERS,
+      })).body)).toBeTruthy();
+    } finally { await app.close(); }
+  });
+
+  it('R02: лимит на POST /authorize/google сохраняется', async () => {
+    const deps = await makeTestDeps({ clients: [GOOGLE_CLIENT] });
+    fakeGoogle(deps);
+    deps.config.rateLimits.identifyPerIp.limit = 1;
+    const app = buildServer(deps);
+    try {
+      await postGoogle(app, FORM_HEADERS, { credential: 'unknown' });
+      const blocked = await postGoogle(app, FORM_HEADERS, { credential: 'unknown' });
       expect(blocked.statusCode).toBe(429);
       expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
-      expect(issue).toHaveBeenCalledTimes(1);
     } finally { await app.close(); }
   });
 
@@ -385,6 +404,21 @@ describe('R01: сторонний адрес Google (без gmail/hd) не да�
     const identity = await deps.repo.findIdentity('google', 'g-new');
     expect(identity).not.toBeNull();
     expect((await deps.repo.findUserByVerifiedEmail('new@corp.example'))?.id).toBe(identity!.userId);
+    await app.close();
+  });
+});
+
+describe('R19: вход через Google гасит прежнюю SSO-сессию', () => {
+  it('прежняя сессия из cookie отозвана', async () => {
+    const deps = await makeTestDeps({ clients: [GOOGLE_CLIENT] });
+    const payloads = fakeGoogle(deps);
+    const app = buildServer(deps);
+    const old = await deps.sso.start('user-old', { provider: 'email', email: 'o@x.com', emailVerified: true });
+    const nonce = await renderNonce(app);
+    payloads.set('good-token', { sub: 'g-1', email: 'g@gmail.com', emailVerified: true, nonce });
+    const res = await postGoogle(app, { ...FORM_HEADERS, cookie: `${FORM_HEADERS.cookie}; sso=${old.rawToken}` });
+    expect(res.statusCode).toBe(302);
+    expect(await deps.sso.resolve(old.rawToken)).toBeNull();
     await app.close();
   });
 });
