@@ -9,6 +9,8 @@ interface ChallengeRow {
   handle_hash: string;
   binding_hash: string;
   email: string;
+  client_id: string | null;
+  client_registration_id: string | null;
   code_hash: string;
   attempts: number;
   max_attempts: number;
@@ -24,7 +26,8 @@ interface ChallengeRow {
 
 const COLUMNS =
   'id, handle_hash, binding_hash, email, code_hash, attempts, max_attempts, resends, max_resends, ' +
-  'link_provider, link_subject, link_name, created_at, expires_at, consumed_at';
+  'link_provider, link_subject, link_name, created_at, expires_at, consumed_at, ' +
+  'client_id, client_registration_id';
 
 // Postgres-реализация LoginChallengeStore. Ограничения попыток и переотправок
 // выражены в WHERE одиночного UPDATE ... RETURNING: Postgres берёт блокировку
@@ -39,6 +42,8 @@ export class PgLoginChallengeStore implements LoginChallengeStore {
       handleHash: row.handle_hash,
       bindingHash: row.binding_hash,
       email: row.email,
+      clientId: row.client_id ?? null,
+      clientRegistrationId: row.client_registration_id ?? null,
       codeHash: row.code_hash,
       attempts: Number(row.attempts),
       maxAttempts: Number(row.max_attempts),
@@ -61,11 +66,12 @@ export class PgLoginChallengeStore implements LoginChallengeStore {
   async create(r: LoginChallengeRecord): Promise<void> {
     await this.db.query(
       `insert into email_login_challenges (${COLUMNS})
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
       [
         r.id, r.handleHash, r.bindingHash, r.email, r.codeHash, r.attempts, r.maxAttempts,
         r.resends, r.maxResends, r.link?.provider ?? null, r.link?.subject ?? null,
         r.link?.name ?? null, r.createdAt, r.expiresAt, r.consumedAt,
+        r.clientId, r.clientRegistrationId,
       ],
     );
   }
@@ -91,22 +97,32 @@ export class PgLoginChallengeStore implements LoginChallengeStore {
     return rows[0] ? PgLoginChallengeStore.toRecord(rows[0]) : null;
   }
 
-  async rotateCode(
-    handleHash: string,
-    bindingHash: string,
-    codeHash: string,
-    expiresAt: Date,
-    now: Date,
-  ): Promise<LoginChallengeRecord | null> {
+  async reserveResend(handleHash: string, bindingHash: string, now: Date): Promise<LoginChallengeRecord | null> {
     const { rows } = await this.db.query<ChallengeRow>(
       `update email_login_challenges
-          set code_hash = $3, expires_at = $4, resends = resends + 1
+          set resends = resends + 1
         where handle_hash = $1 and binding_hash = $2 and consumed_at is null
-          and expires_at > $5 and resends < max_resends and attempts < max_attempts
+          and expires_at > $3 and resends < max_resends and attempts < max_attempts
         returning ${COLUMNS}`,
-      [handleHash, bindingHash, codeHash, expiresAt, now],
+      [handleHash, bindingHash, now],
     );
     return rows[0] ? PgLoginChallengeStore.toRecord(rows[0]) : null;
+  }
+
+  async replaceCode(id: string, codeHash: string, expiresAt: Date, now: Date): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      `update email_login_challenges set code_hash = $2, expires_at = $3
+        where id = $1 and consumed_at is null and expires_at > $4 returning id`,
+      [id, codeHash, expiresAt, now],
+    );
+    return rowCount === 1;
+  }
+
+  async releaseResend(id: string): Promise<void> {
+    await this.db.query(
+      'update email_login_challenges set resends = resends - 1 where id = $1 and resends > 0',
+      [id],
+    );
   }
 
   async consume(id: string, at: Date): Promise<boolean> {

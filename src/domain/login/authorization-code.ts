@@ -8,6 +8,10 @@ export interface AuthSnapshot {
   email?: string;
   emailVerified?: boolean;
   name?: string;
+  // Вход, которым получен снимок (новый при каждой аутентификации). SSO-сессия
+  // этого входа и коды, выданные через неё, несут тот же loginId: по нему обмен
+  // кода находит цепочку SSO браузера (SsoSessionService.chainOfLogin).
+  loginId?: string;
 }
 
 // Результат успешного обмена кода: с чем идём выпускать токены (Фаза 3b).
@@ -16,6 +20,8 @@ export interface AuthorizationGrant {
   clientId: string;
   // Тип клиента, по правилам которого вход решал, нужно ли согласие.
   clientType: ClientType;
+  // Регистрация клиента из снимка, по которому решён вход.
+  clientRegistrationId?: string;
   scope: string;
   nonce?: string;
   auth: AuthSnapshot;
@@ -27,6 +33,7 @@ export interface AuthorizationCodeRecord {
   codeHash: string;
   clientId: string;
   clientType: ClientType;
+  clientRegistrationId?: string;
   userId: string;
   redirectUri: string;
   codeChallenge: string;

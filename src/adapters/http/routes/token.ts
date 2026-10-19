@@ -10,6 +10,7 @@ import { InvalidGrantError } from '../../../domain/login/errors.js';
 import { grantFitsClient } from '../../../domain/login/grant-policy.js';
 import { sha256Hex } from '../../../domain/shared/hash.js';
 import { RefreshTokenReuseError } from '../../../domain/sessions/errors.js';
+import { chainOfLogin } from '../../../domain/sso/sso-session-service.js';
 import type { Client } from '../../../domain/clients/client.js';
 
 function device(req: FastifyRequest): DeviceInfo {
@@ -47,9 +48,6 @@ export function registerToken(app: FastifyInstance, deps: HttpDeps): void {
     reply.header('Retry-After', String(retryAfterSeconds));
     return reply.status(429).send({ error: 'too_many_requests' });
   };
-  const checkPolicy = async (clientId: string, provider: string) => {
-    if (!allowsProvider(await deps.clients.findClient(clientId), provider)) throw new InvalidGrantError();
-  };
 
   app.post('/oauth/token', async (req, reply) => {
     reply.header('cache-control', 'no-store');
@@ -83,11 +81,14 @@ export function registerToken(app: FastifyInstance, deps: HttpDeps): void {
         // блокировкой клиента: PATCH или DELETE клиента либо дождётся конца
         // обмена и отзовёт его сессию, либо обмен увидит уже новую политику.
         // Ответ отправляем после фиксации транзакции.
-        const issued = await deps.clientLock.shared(b.client_id, async ({ client, codes, sessions }) => {
+        const issued = await deps.clientLock.shared(b.client_id, async ({ client, codes, sessions, sso }) => {
           const grant = await codes.redeem(redeem);
           // Отказ по политике — без исключения: погашенный код фиксируется.
           if (!grantFitsClient(client, grant, b.redirect_uri)) return null;
-          return sessions.start({
+          // Сессия запоминает SSO-цепочку браузера, через которую выдан код:
+          // смена аккаунта и выход в этом браузере её погасят.
+          const ssoChainId = await chainOfLogin(sso, grant.auth.loginId);
+          const started = await sessions.start({
             userId: grant.userId,
             clientId: grant.clientId,
             provider: grant.auth.provider,
@@ -99,20 +100,45 @@ export function registerToken(app: FastifyInstance, deps: HttpDeps): void {
             scope: grant.scope,
             device: device(req),
             nonce: grant.nonce,
+            ...(ssoChainId ? { ssoChainId } : {}),
           });
+          // Цепочку перепроверяем после записи сессии, удерживая SSO-сессии
+          // пользователя в ней до конца транзакции. Выход или смена аккаунта
+          // в браузере либо дождутся транзакции и погасят новую сессию вместе
+          // с цепочкой, либо уже погасили цепочку — тогда гасим сессию здесь.
+          // Повторный вход того же пользователя цепочку не обрывает.
+          if (ssoChainId && !(await sso.holdSignedIn(ssoChainId, grant.userId))) {
+            await sessions.revoke(started.sessionId);
+            return null;
+          }
+          return started;
         });
         if (!issued) throw new InvalidGrantError();
         return reply.status(200).send(toJson(issued));
       }
       if (base.data.grant_type === 'refresh_token') {
         const b = refreshSchema.parse(req.body);
+        // Сессия по токену — только ключ лимита; лимит — до блокировки клиента.
         const session = await deps.sessions.resolveRefreshSession(b.refresh_token);
-        await checkPolicy(session.clientId, session.provider);
         const limit = await hitPrincipal(`token-session:${session.id}`);
         if (!limit.allowed) return tooManyRequests(reply, limit.retryAfterSeconds);
         if (b.client_id !== undefined && b.client_id !== session.clientId) throw new InvalidGrantError();
-        const issued = await deps.sessions.refresh(b.refresh_token, device(req));
-        return reply.status(200).send(toJson(issued));
+        // Проверка политики и выпуск токенов — под общей блокировкой клиента,
+        // как обмен кода: PATCH, запретивший провайдера, либо дождётся конца
+        // refresh и отзовёт сессию, либо refresh увидит уже новую политику.
+        // Повтор погашенного токена отзывает сессию; отзыв фиксируется вместе
+        // с транзакцией, поэтому ошибку бросаем уже после неё.
+        const outcome = await deps.clientLock.shared(session.clientId, async ({ client, sessions }) => {
+          if (!allowsProvider(client, session.provider)) return { error: new InvalidGrantError() };
+          try {
+            return { issued: await sessions.refresh(b.refresh_token, device(req)) };
+          } catch (err) {
+            if (err instanceof RefreshTokenReuseError) return { error: err };
+            throw err;
+          }
+        });
+        if ('error' in outcome) throw outcome.error;
+        return reply.status(200).send(toJson(outcome.issued));
       }
       return reply.status(400).send({ error: 'unsupported_grant_type' });
     } catch (err) {

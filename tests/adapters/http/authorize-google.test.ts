@@ -90,7 +90,7 @@ describe('кнопка Google на странице входа', () => {
   it('R02: лимит nonce исчерпан → страница входа без кнопки Google, вход по почте работает', async () => {
     const deps = await makeTestDeps({ clients: [GOOGLE_CLIENT] });
     fakeGoogle(deps);
-    deps.config.rateLimits.identifyPerIp.limit = 1;
+    deps.config.rateLimits.googleNoncePerIp.limit = 1;
     const issue = vi.spyOn(deps.googleNonces!, 'issue');
     const app = buildServer(deps);
     try {

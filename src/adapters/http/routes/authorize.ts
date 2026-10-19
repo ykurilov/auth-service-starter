@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Logger } from 'pino';
 import { z } from 'zod';
-import type { Config } from '../../../config/config.js';
+import type { Config, RateLimitRule } from '../../../config/config.js';
 import { MailDeliveryError } from '../../../ports/mailer.js';
 import type { HttpDeps } from '../deps.js';
 import type { AuthorizationRequest } from '../../../domain/login/login-service.js';
@@ -11,13 +11,19 @@ import { errorPage } from '../views/error-page.js';
 import { authorizeUrl, type OidcParams } from '../views/oidc-params.js';
 import { setSsoCookie, readSsoCookie } from '../cookies.js';
 import { ensureCsrf, isSameOriginRequest, readCsrfCookie, verifyCsrf } from '../csrf.js';
-import { enforce, ipHash } from '../rate-limit.js';
+import { enforce, ipHash, waitText } from '../rate-limit.js';
 import { logSecurityEvent } from '../security-log.js';
 import { parseEmailAddress } from '../../../domain/identity/user.js';
 import { EmailOwnershipRequiredError } from '../../../domain/identity/identity-service.js';
 import type { ProviderIdentity } from '../../../domain/identity/provider-identity.js';
 import type { PendingLink } from '../../../domain/email-login/login-challenge.js';
-import { InvalidCredentialsError, InvalidEmailError } from '../../../domain/email-login/errors.js';
+import {
+  ChallengeClientChangedError,
+  InvalidCredentialsError,
+  InvalidEmailError,
+  UnconfirmedCodeDeliveryError,
+} from '../../../domain/email-login/errors.js';
+import { displayEmail, toAsciiEmail } from '../../../domain/email-login/email-address.js';
 import { EMAIL_PROVIDER } from '../../../domain/email-login/email-provider.js';
 import {
   InvalidClientError,
@@ -32,8 +38,10 @@ const querySchema = z.object({
   client_id: z.string().min(1),
   redirect_uri: z.string().min(1),
   response_type: z.string().optional(),
-  code_challenge: z.string().min(1),
-  code_challenge_method: z.string().min(1),
+  // Без PKCE запрос не пройдёт, но отказ — после проверки client_id и
+  // redirect_uri: тогда он уходит клиенту редиректом invalid_request.
+  code_challenge: z.string().default(''),
+  code_challenge_method: z.string().default(''),
   scope: z.string().default('openid'),
   state: z.string().optional(),
   nonce: z.string().optional(),
@@ -119,6 +127,14 @@ function csrfGuard(req: FastifyRequest, reply: FastifyReply, config: Config, fie
 
 // RFC 6749 §4.1.2.1: ошибка возвращается клиенту редиректом на redirect_uri.
 // error_description по спеке — только ASCII.
+function errorCallbackUrl(redirectUri: string, error: string, description: string, state?: string): string {
+  const url = new URL(redirectUri);
+  url.searchParams.set('error', error);
+  url.searchParams.set('error_description', description);
+  if (state !== undefined) url.searchParams.set('state', state);
+  return url.toString();
+}
+
 export function redirectWithError(
   reply: FastifyReply,
   redirectUri: string,
@@ -126,11 +142,7 @@ export function redirectWithError(
   description: string,
   state?: string,
 ): FastifyReply {
-  const url = new URL(redirectUri);
-  url.searchParams.set('error', error);
-  url.searchParams.set('error_description', description);
-  if (state !== undefined) url.searchParams.set('state', state);
-  return reply.redirect(url.toString(), 302);
+  return reply.redirect(errorCallbackUrl(redirectUri, error, description, state), 302);
 }
 
 export function authorizeErrorPage(err: unknown, reply: FastifyReply, logger?: Logger): FastifyReply {
@@ -149,26 +161,40 @@ export function authorizeErrorPage(err: unknown, reply: FastifyReply, logger?: L
 // задан в validateRequest/completeLogin), поэтому по спеке их положено
 // возвращать редиректом с error=, а не HTML-страницей — иначе OIDC-библиотеки
 // (openid-client, oidc-client-ts) виснут по таймауту вместо обработки ошибки.
+// JS-форма кода (X-Auth-Navigation: replace) получает тот же адрес в JSON:
+// fetch не может пройти редирект на чужой origin.
 function authorizeError(
   err: unknown,
+  req: FastifyRequest,
   reply: FastifyReply,
   params: OidcParams,
   logger?: Logger,
 ): FastifyReply {
-  if (err instanceof UnsupportedPkceError)
-    return redirectWithError(
-      reply, params.redirect_uri, 'invalid_request', 'code_challenge_method must be S256', params.state,
-    );
-  if (err instanceof ProviderNotAllowedError)
-    return redirectWithError(
-      reply, params.redirect_uri, 'unauthorized_client', 'login method is not allowed for this client', params.state,
-    );
-  return authorizeErrorPage(err, reply, logger);
+  const protocolError =
+    err instanceof UnsupportedPkceError
+      ? { error: 'invalid_request', description: 'PKCE code_challenge with method S256 is required' }
+      : err instanceof ProviderNotAllowedError
+        ? { error: 'unauthorized_client', description: 'login method is not allowed for this client' }
+        : null;
+  if (!protocolError) return authorizeErrorPage(err, reply, logger);
+  const url = errorCallbackUrl(params.redirect_uri, protocolError.error, protocolError.description, params.state);
+  return wantsReplaceNavigation(req) ? replaceNavigation(reply, url) : reply.redirect(url, 302);
 }
 
 // Почтовый провайдер не принял письмо или не ответил вовремя (таймаут в
 // адаптере). Пользователь остаётся на своём шаге и может повторить.
 const MAIL_FAILED = 'Не удалось отправить письмо с кодом. Попробуйте ещё раз через минуту.';
+// Первое письмо попытки: при таймауте оно могло всё же дойти позже, поэтому
+// пользователь остаётся на экране кода этой попытки.
+const MAIL_UNCONFIRMED =
+  'Не удалось подтвердить отправку письма. Если письмо всё же придёт, введите код из него. ' +
+  'Если нет — нажмите «Отправить код ещё раз».';
+// Код уже погашен, а вход не завершился (сбой хранилища): тот же код больше
+// не подойдёт.
+const LOGIN_NOT_COMPLETED = 'Не удалось завершить вход. Код уже использован — начните вход заново.';
+// Попытка начата у прежней регистрации приложения (его удалили и создали
+// заново) — продолжать её нельзя.
+const CLIENT_CHANGED = 'Приложение изменилось, пока шёл вход. Начните вход заново.';
 
 export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
   const otp = deps.otpRateLimiter;
@@ -177,14 +203,14 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
   // задан) и клиент допущен к нему в allowedProviders. Вместе с кнопкой сервер
   // выпускает одноразовый nonce, хранит его у себя (привязка к браузеру и
   // клиенту) и гасит при входе — повтор того же id_token не пройдёт.
-  // Выпуск nonce ограничен по источнику (в production общий Pg-счётчик держит
-  // предел и при сбое Redis). Лимит исчерпан — страница входа без кнопки
-  // Google: вход по почте nonce не нужен и работать должен.
+  // Выпуск nonce ограничен по источнику своим счётчиком (в production общий
+  // Pg-счётчик держит предел и при сбое Redis). Лимит исчерпан — вместо кнопки
+  // Google пояснение со временем ожидания: вход по почте nonce не нужен.
   const googleFields = async (
     req: FastifyRequest,
     validated: ValidatedAuthorization,
     binding: string,
-  ): Promise<{ googleClientId?: string; googleNonce?: string }> => {
+  ): Promise<{ googleClientId?: string; googleNonce?: string; googleUnavailableFor?: string }> => {
     if (
       !deps.googleProvider ||
       !deps.googleNonces ||
@@ -193,8 +219,9 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     ) {
       return {};
     }
-    const rule = deps.config.rateLimits.identifyPerIp;
-    if (!(await otp.hit(`google-nonce:${ipHash(req)}`, rule.limit, rule.windowSeconds)).allowed) return {};
+    const rule = deps.config.rateLimits.googleNoncePerIp;
+    const hit = await otp.hit(`google-nonce:${ipHash(req)}`, rule.limit, rule.windowSeconds);
+    if (!hit.allowed) return { googleUnavailableFor: waitText(hit.retryAfterSeconds) };
     return {
       googleClientId: deps.config.googleClientId,
       googleNonce: await deps.googleNonces.issue(binding, validated.client.id),
@@ -216,6 +243,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
       loginPage({
         params,
         csrfToken,
+        emailAllowed: validated.client.allowedProviders.includes(EMAIL_PROVIDER),
         ...(extra.email !== undefined ? { email: extra.email } : {}),
         ...(extra.error !== undefined ? { error: extra.error } : {}),
         ...(extra.notice !== undefined ? { notice: extra.notice } : {}),
@@ -234,7 +262,13 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     html(
       reply,
       status,
-      loginPage({ params, mode: 'code', csrfToken: ensureCsrf(req, reply, deps.config), ...input }),
+      loginPage({
+        params,
+        mode: 'code',
+        csrfToken: ensureCsrf(req, reply, deps.config),
+        ...input,
+        email: displayEmail(input.email),
+      }),
     );
 
   // Глобальная SSO-cookie может быть выпущена способом входа, который не
@@ -255,21 +289,39 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
       : null;
   };
 
-  // Бюджеты отправки кода (Postgres-лимитер): источник на все адреса, источник
-  // на адрес, адрес за час и за сутки (бюджет аккаунта против ротации IP).
+  // Бюджеты отправки кода (Postgres-лимитер). Каждое письмо тратит общий
+  // бюджет источника на все адреса. Новая попытка входа — ещё и бюджеты
+  // источника на адрес и адреса за час и за сутки (против ротации IP).
+  // Переотправка в живой попытке их не тратит: её предел — в самой попытке,
+  // и посторонний, исчерпавший лимит адреса, не мешает владельцу дослать код.
+  // Возвращает списанные ключи (чтобы вернуть их, если провайдер отказал) или
+  // null, если лимит исчерпан и страница 429 уже отправлена.
   const enforceSendBudget = async (
     req: FastifyRequest,
     reply: FastifyReply,
     email: string,
-  ): Promise<boolean> => {
+    send: 'new-attempt' | 'resend',
+  ): Promise<string[] | null> => {
     const r = deps.config.rateLimits;
     const ip = ipHash(req);
-    return (
-      (await enforce(deps, reply, `code-req-ip:${ip}`, r.codeRequestPerIp, otp)) &&
-      (await enforce(deps, reply, `code-req:${ip}:${email}`, r.codeRequest, otp)) &&
-      (await enforce(deps, reply, `code-req-email:${email}`, r.codeRequestPerEmail, otp)) &&
-      (await enforce(deps, reply, `code-req-email-day:${email}`, r.codeRequestPerEmailDaily, otp))
-    );
+    const budgets: [string, RateLimitRule][] = [[`code-req-ip:${ip}`, r.codeRequestPerIp]];
+    if (send === 'new-attempt')
+      budgets.push(
+        [`code-req:${ip}:${email}`, r.codeRequest],
+        [`code-req-email:${email}`, r.codeRequestPerEmail],
+        [`code-req-email-day:${email}`, r.codeRequestPerEmailDaily],
+      );
+    const spent: string[] = [];
+    for (const [key, rule] of budgets) {
+      if (!(await enforce(deps, reply, key, rule, otp))) return null;
+      spent.push(key);
+    }
+    return spent;
+  };
+
+  // Провайдер окончательно отказал: письма не было, бюджет не списываем.
+  const refundSendBudget = async (spent: string[]): Promise<void> => {
+    for (const key of spent) await otp.refund?.(key);
   };
 
   // Новая попытка входа по коду и экран ввода. Наличие аккаунта не раскрываем:
@@ -284,22 +336,32 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     link?: PendingLink,
     notice?: string,
   ): Promise<FastifyReply> => {
-    const email = parseEmailAddress(rawEmail);
+    const email = parseEmailAddress(toAsciiEmail(rawEmail));
     if (!email)
       return identifyPage(req, reply, params, validated, {
         email: rawEmail,
         error: 'Проверьте адрес почты',
         status: 400,
       });
-    if (!(await enforceSendBudget(req, reply, email))) return reply;
+    const spent = await enforceSendBudget(req, reply, email, 'new-attempt');
+    if (!spent) return reply;
     let started;
     try {
-      started = await deps.codeProvider.start({ email, binding, ...(link ? { link } : {}) });
+      started = await deps.codeProvider.start({ email, binding, client: validated.client, ...(link ? { link } : {}) });
     } catch (err) {
       if (err instanceof InvalidEmailError)
         return identifyPage(req, reply, params, validated, { email: rawEmail, error: 'Проверьте адрес почты', status: 400 });
+      if (err instanceof UnconfirmedCodeDeliveryError) {
+        deps.logger.error({ err }, 'письмо с кодом не подтверждено провайдером');
+        return codePage(
+          req, reply, params,
+          { email: err.challenge.email, challenge: err.challenge.handle, error: MAIL_UNCONFIRMED },
+          503,
+        );
+      }
       if (err instanceof MailDeliveryError) {
         deps.logger.error({ err }, 'письмо с кодом не отправлено');
+        await refundSendBudget(spent);
         return identifyPage(req, reply, params, validated, { email: rawEmail, error: MAIL_FAILED, status: 503 });
       }
       throw err;
@@ -323,8 +385,12 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     try {
       validated = await deps.login.validateRequest(toAuthorizationRequest(params));
     } catch (err) {
-      return authorizeError(err, reply, params, deps.logger);
+      return authorizeError(err, req, reply, params, deps.logger);
     }
+    // csrf-cookie выдаём уже на тихом шаге (prompt=none): иначе две вкладки,
+    // одновременно пришедшие на интерактивный /authorize без cookie, выпустили
+    // бы по своему токену, и форма первой вкладки перестала бы проходить.
+    ensureCsrf(req, reply, deps.config);
     // Discovery заявляет только code; иной response_type — протокольная ошибка
     // редиректом (redirect_uri к этому моменту уже проверен).
     if (response_type !== undefined && response_type !== 'code')
@@ -352,7 +418,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
         const code = await deps.login.completeSsoLogin(validated, session.userId, session.auth);
         return redirectWithCode(reply, params.redirect_uri, code, params.state);
       } catch (err) {
-        return authorizeError(err, reply, params, deps.logger);
+        return authorizeError(err, req, reply, params, deps.logger);
       }
     }
     if (session) {
@@ -385,13 +451,13 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     try {
       validated = await deps.login.validateRequest(toAuthorizationRequest(params));
     } catch (err) {
-      return authorizeError(err, reply, params, deps.logger);
+      return authorizeError(err, req, reply, params, deps.logger);
     }
     let pid: ProviderIdentity;
     try {
       pid = await google.verify({ credential, binding, clientId: validated.client.id });
     } catch (err) {
-      if (!(err instanceof InvalidCredentialsError)) return authorizeError(err, reply, params, deps.logger);
+      if (!(err instanceof InvalidCredentialsError)) return authorizeError(err, req, reply, params, deps.logger);
       logSecurityEvent(deps.logger, req, 'login_failed', { method: 'google' });
       return identifyPage(req, reply, params, validated, {
         error: 'Не удалось войти через Google, попробуйте ещё раз',
@@ -403,7 +469,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
       setSsoCookie(reply, deps.config, rawToken);
       return redirectWithCode(reply, params.redirect_uri, code, params.state);
     } catch (err) {
-      if (!(err instanceof EmailOwnershipRequiredError)) return authorizeError(err, reply, params, deps.logger);
+      if (!(err instanceof EmailOwnershipRequiredError)) return authorizeError(err, req, reply, params, deps.logger);
       // Google не доказывает владение этим (сторонним) адресом: ни создавать
       // по нему пользователя, ни присоединять к существующему нельзя. Владелец
       // подтверждает адрес кодом из письма; после верного кода эта Google-
@@ -423,14 +489,26 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
       return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
     const { csrf, email, ...rest } = parsed.data;
     const params: OidcParams = rest;
-    const binding = csrfGuard(req, reply, deps.config, csrf);
-    if (binding === null) return;
+    // Токен формы перезаписан другой вкладкой (обе открылись до первой
+    // csrf-cookie): с той же страницы сервиса показываем форму заново с
+    // действующим токеном и введённым адресом. Сама форма ничего не делает.
+    const staleForm =
+      readCsrfCookie(req, deps.config) !== null &&
+      isSameOriginRequest(req, deps.config) &&
+      !verifyCsrf(req, deps.config, csrf);
+    const binding = staleForm ? null : csrfGuard(req, reply, deps.config, csrf);
+    if (!staleForm && binding === null) return;
     let validated;
     try {
       validated = await deps.login.validateRequest(toAuthorizationRequest(params));
     } catch (err) {
-      return authorizeError(err, reply, params, deps.logger);
+      return authorizeError(err, req, reply, params, deps.logger);
     }
+    if (binding === null)
+      return identifyPage(req, reply, params, validated, {
+        email,
+        notice: 'Страницу входа открыли в другой вкладке — проверьте адрес и отправьте форму ещё раз',
+      });
     if (!validated.client.allowedProviders.includes(EMAIL_PROVIDER))
       return redirectWithError(
         reply, params.redirect_uri, 'unauthorized_client', 'login method is not allowed for this client', params.state,
@@ -451,13 +529,14 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     try {
       validated = await deps.login.validateRequest(toAuthorizationRequest(params));
     } catch (err) {
-      return authorizeError(err, reply, params, deps.logger);
+      return authorizeError(err, req, reply, params, deps.logger);
     }
     const view = await deps.codeProvider.describe({ handle: challenge, binding });
     if (!view)
       return identifyPage(req, reply, params, validated, {
         error: 'Код истёк или попытки закончились — запросите новый код',
       });
+    if (!view.startedFor(validated.client)) return clientChanged(req, reply, params, validated);
     const resendExhausted = () =>
       identifyPage(req, reply, params, validated, {
         email: view.email,
@@ -466,18 +545,72 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     // Попытка уже исчерпана (повторы или проверки) — письма не будет, и бюджет
     // отправок не тратим.
     if (view.resendsLeft <= 0 || view.attemptsLeft <= 0) return resendExhausted();
-    if (!(await enforceSendBudget(req, reply, view.email))) return reply;
+    const spent = await enforceSendBudget(req, reply, view.email, 'resend');
+    if (!spent) return reply;
     let resent;
     try {
-      resent = await deps.codeProvider.resend({ handle: challenge, binding });
+      resent = await deps.codeProvider.resend({ handle: challenge, binding, client: validated.client });
     } catch (err) {
+      if (err instanceof ChallengeClientChangedError) return clientChanged(req, reply, params, validated);
       if (!(err instanceof MailDeliveryError)) throw err;
       deps.logger.error({ err }, 'письмо с кодом не отправлено');
+      if (err.outcome === 'rejected') await refundSendBudget(spent);
       return codePage(req, reply, params, { email: view.email, challenge, error: MAIL_FAILED }, 503);
     }
     if (!resent) return resendExhausted();
-    return codePage(req, reply, params, { email: resent.email, challenge, notice: 'Отправили новый код' });
+    return codePage(req, reply, params, {
+      email: resent.email,
+      challenge,
+      notice: 'Отправили новый код — прежний код больше не действует',
+    });
   });
+
+  // Попытка другой регистрации клиента: понятный отказ и путь к новому входу.
+  const clientChanged = (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    params: OidcParams,
+    validated: ValidatedAuthorization,
+  ): Promise<FastifyReply> | FastifyReply => {
+    if (wantsReplaceNavigation(req))
+      return reply
+        .status(409)
+        .header('cache-control', 'no-store')
+        .send({ error: CLIENT_CHANGED, restartTo: authorizeUrl(params, true) });
+    return identifyPage(req, reply, params, validated, { error: CLIENT_CHANGED, status: 409 });
+  };
+
+  // Неверный код или исчерпанная попытка.
+  const wrongCode = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    params: OidcParams,
+    validated: ValidatedAuthorization,
+    challenge: string,
+    binding: string,
+  ): Promise<FastifyReply> => {
+    const view = await deps.codeProvider.describe({ handle: challenge, binding });
+    logSecurityEvent(deps.logger, req, 'login_failed', {
+      method: 'email_code',
+      ...(view ? { email: view.email } : {}),
+    });
+    const message =
+      view && view.attemptsLeft > 0
+        ? 'Неверный или просроченный код'
+        : 'Код истёк или попытки закончились — запросите новый код';
+    const exhausted = !view || view.attemptsLeft <= 0;
+    // JS-режим: при исчерпанной попытке форма кода бесполезна — сигнал
+    // вернуться к вводу почты (prompt=login, чтобы SSO-cookie не увела на
+    // экран согласия).
+    if (wantsReplaceNavigation(req))
+      return reply
+        .status(401)
+        .header('cache-control', 'no-store')
+        .send(exhausted ? { error: message, restartTo: authorizeUrl(params, true) } : { error: message });
+    if (exhausted)
+      return identifyPage(req, reply, params, validated, { ...(view ? { email: view.email } : {}), error: message });
+    return codePage(req, reply, params, { email: view.email, challenge, error: message });
+  };
 
   app.post('/authorize/code/verify', async (req, reply) => {
     const parsed = codeVerifySchema.safeParse(req.body);
@@ -496,22 +629,36 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     try {
       validated = await deps.login.validateRequest(toAuthorizationRequest(params));
     } catch (err) {
-      return authorizeError(err, reply, params, deps.logger);
+      return authorizeError(err, req, reply, params, deps.logger);
     }
+    // Политика клиента — до гашения кода и попытки: запрещённый способ входа
+    // не должен тратить код, проверку и бюджет отправки.
+    const pending = await deps.codeProvider.describe({ handle: challenge, binding });
+    if (pending && !pending.startedFor(validated.client)) return clientChanged(req, reply, params, validated);
+    const provider = pending?.link ? pending.link.provider : EMAIL_PROVIDER;
+    if (pending && !validated.client.allowedProviders.includes(provider))
+      return authorizeError(new ProviderNotAllowedError(provider), req, reply, params, deps.logger);
+    let verified;
     try {
-      const verified = await deps.codeProvider.verifyChallenge({ handle: challenge, binding, code });
-      // Попытка начата входом через Google со сторонним адресом: код доказал
-      // владение — входим этой Google-личностью, IdentityService привяжет её
-      // к владельцу адреса (или создаст его).
-      const pid: ProviderIdentity = verified.link
-        ? {
-            provider: verified.link.provider,
-            subject: verified.link.subject,
-            email: verified.identity.email,
-            emailVerified: true,
-            profile: verified.link.name ? { name: verified.link.name } : {},
-          }
-        : verified.identity;
+      verified = await deps.codeProvider.verifyChallenge({ handle: challenge, binding, code, client: validated.client });
+    } catch (err) {
+      if (err instanceof ChallengeClientChangedError) return clientChanged(req, reply, params, validated);
+      if (!(err instanceof InvalidCredentialsError)) return authorizeError(err, req, reply, params, deps.logger);
+      return wrongCode(req, reply, params, validated, challenge, binding);
+    }
+    // Попытка начата входом через Google со сторонним адресом: код доказал
+    // владение — входим этой Google-личностью, IdentityService привяжет её
+    // к владельцу адреса (или создаст его).
+    const pid: ProviderIdentity = verified.link
+      ? {
+          provider: verified.link.provider,
+          subject: verified.link.subject,
+          email: verified.identity.email,
+          emailVerified: true,
+          profile: verified.link.name ? { name: verified.link.name } : {},
+        }
+      : verified.identity;
+    try {
       const { code: issued, userId, auth } = await deps.login.completeLogin(validated, pid);
       const { rawToken } = await deps.sso.start(userId, auth, readSsoCookie(req, deps.config));
       setSsoCookie(reply, deps.config, rawToken);
@@ -522,28 +669,16 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
         );
       return redirectWithCode(reply, params.redirect_uri, issued, params.state);
     } catch (err) {
-      if (!(err instanceof InvalidCredentialsError)) return authorizeError(err, reply, params, deps.logger);
-      const view = await deps.codeProvider.describe({ handle: challenge, binding });
-      logSecurityEvent(deps.logger, req, 'login_failed', {
-        method: 'email_code',
-        ...(view ? { email: view.email } : {}),
-      });
-      const message =
-        view && view.attemptsLeft > 0
-          ? 'Неверный или просроченный код'
-          : 'Код истёк или попытки закончились — запросите новый код';
-      const exhausted = !view || view.attemptsLeft <= 0;
-      // JS-режим: при исчерпанной попытке форма кода бесполезна — сигнал
-      // вернуться к вводу почты (prompt=login, чтобы SSO-cookie не увела на
-      // экран согласия).
+      if (err instanceof UnsupportedPkceError || err instanceof ProviderNotAllowedError)
+        return authorizeError(err, req, reply, params, deps.logger);
+      // Код уже погашен: прямо говорим, что нужен новый вход.
+      deps.logger.error({ err }, 'вход по коду не завершён после верного кода');
       if (wantsReplaceNavigation(req))
         return reply
-          .status(401)
+          .status(500)
           .header('cache-control', 'no-store')
-          .send(exhausted ? { error: message, restartTo: authorizeUrl(params, true) } : { error: message });
-      if (exhausted)
-        return identifyPage(req, reply, params, validated, { ...(view ? { email: view.email } : {}), error: message });
-      return codePage(req, reply, params, { email: view.email, challenge, error: message });
+          .send({ error: LOGIN_NOT_COMPLETED, restartTo: authorizeUrl(params, true) });
+      return identifyPage(req, reply, params, validated, { error: LOGIN_NOT_COMPLETED, status: 500 });
     }
   });
 
@@ -558,7 +693,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     try {
       validated = await deps.login.validateRequest(toAuthorizationRequest(params));
     } catch (err) {
-      return authorizeError(err, reply, params, deps.logger);
+      return authorizeError(err, req, reply, params, deps.logger);
     }
     const session = await resolveCompatibleSsoSession(req, reply, validated);
     if (!session) return identifyPage(req, reply, params, validated);
@@ -570,7 +705,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
       const code = await deps.login.completeSsoLogin(validated, session.userId, session.auth);
       return redirectWithCode(reply, params.redirect_uri, code, params.state);
     } catch (err) {
-      return authorizeError(err, reply, params, deps.logger);
+      return authorizeError(err, req, reply, params, deps.logger);
     }
   });
 }

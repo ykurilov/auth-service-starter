@@ -1,6 +1,7 @@
 import type { Client, ClientWriteStore } from './client.js';
 import type { AuthorizationCodeService } from '../login/authorization-code-service.js';
 import type { SessionService } from '../sessions/session-service.js';
+import type { SsoSessionStore } from '../sso/sso-session.js';
 
 // Сервисы, которые работают под той же блокировкой клиента, что и снимок client:
 // в Postgres — в одной транзакции с ним.
@@ -9,6 +10,8 @@ export interface ClientScope {
   client: Client | null;
   codes: AuthorizationCodeService;
   sessions: SessionService;
+  // SSO-сессии: обмен кода сверяет цепочку браузера в той же транзакции.
+  sso: SsoSessionStore;
 }
 
 export interface ClientWriteScope extends ClientScope {

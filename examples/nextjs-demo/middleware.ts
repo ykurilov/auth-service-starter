@@ -1,9 +1,11 @@
 import { createAuthMiddleware } from '@/auth';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const auth = createAuthMiddleware({ env: process.env, protect: ['/dashboard'] });
+// Как и обработчики входа, создаётся при первом запросе: сборка идёт без AUTH_*.
+let auth: ReturnType<typeof createAuthMiddleware> | undefined;
 
 export function middleware(req: NextRequest) {
+  auth ??= createAuthMiddleware({ env: process.env, protect: ['/dashboard'] });
   // Второй аргумент обязателен: «пропустить запрос» в Next.js — это
   // NextResponse.next(), модуль сам его собрать не может.
   return auth(req, (headers) => NextResponse.next({ request: { headers } }));

@@ -10,7 +10,12 @@ export const SILENT_CHECK_COOKIE = '__Host-auth_silent_checked';
 
 export const SILENT_CHECK_PARAM = 'auth_silent_checked';
 export const LOGOUT_COOKIE = '__Host-auth_logout';
+// Незавершённых попыток входа в браузере не больше этого числа: новая
+// вытесняет самую старую. Cookie попытки маленькая (next лежит в state), так
+// что все вместе они занимают в заголовке Cookie около 1,6 КБ.
 export const MAX_LOGIN_FLOWS = 4;
+// Браузеры хранят cookie до 4096 байт на имя и значение; берём с запасом.
+export const MAX_COOKIE_BYTES = 4000;
 
 // HTTPS никогда не читает legacy-имена. HTTP localhost использует имена без префикса.
 export function cookieName(name: string, secure: boolean): string {
@@ -44,7 +49,10 @@ export function authCookieNames(clientId: string, appUrl: string): AuthCookieNam
 }
 
 export const SESSION_MAX_AGE = 30 * 24 * 3600; // 30 дней
-export const FLOW_MAX_AGE = 10 * 60; // 10 минут
+// Попытка входа живёт час: код из письма действует 15 минут, и каждая из трёх
+// переотправок продлевает его ещё на 15. Дольше не нужно и сервису.
+export const FLOW_MAX_AGE = 60 * 60;
+export const LOGOUT_MAX_AGE = 10 * 60; // 10 минут на подтверждение выхода
 export const SILENT_CHECK_MAX_AGE = 5 * 60; // 5 минут
 
 export interface CookieOptions {

@@ -48,12 +48,10 @@ jobs:
       - name: Hono + Vite
         working-directory: examples/hono-vite-demo
         run: npm ci && npm run typecheck && npm run build
+      # Без AUTH_*: обработчики входа создаются при первом запросе, сборке
+      # переменные не нужны.
       - name: Next.js
         working-directory: examples/nextjs-demo
-        env:
-          AUTH_URL: http://localhost:3016
-          AUTH_APP_URL: http://localhost:3005
-          AUTH_COOKIE_SECRET: ci-only-cookie-secret-for-build-not-production
         run: npm ci && npm run build
   secrets:
     runs-on: ubuntu-24.04

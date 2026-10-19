@@ -128,3 +128,26 @@ describe('LoginService.completeLogin: снимок адреса из базы (R
     expect(grant.auth).toMatchObject({ email: 'a@corp.example', emailVerified: true });
   });
 });
+
+describe('T18: name в снимке входа — имя пользователя из базы', () => {
+  const googleClient = { ...client, allowedProviders: ['email', 'google'] };
+  const googlePid: ProviderIdentity = {
+    provider: 'google', subject: 'g-1', email: 'a@b.com', emailVerified: true, profile: { name: 'Мария' },
+  };
+
+  it('Google с именем, затем вход по коду (без имени) → в снимке имя из базы', async () => {
+    const { login } = make();
+    const validated = { client: googleClient, request: req };
+    await login.completeLogin(validated, googlePid);
+    const byCode = await login.completeLogin(validated, emailPid);
+    expect(byCode.auth.name).toBe('Мария');
+  });
+
+  it('у пользователя есть имя, Google принёс другое → в снимке имя из базы', async () => {
+    const { login } = make();
+    const validated = { client: googleClient, request: req };
+    await login.completeLogin(validated, googlePid);
+    const renamed = await login.completeLogin(validated, { ...googlePid, profile: { name: 'Mary' } });
+    expect(renamed.auth.name).toBe('Мария');
+  });
+});

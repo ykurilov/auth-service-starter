@@ -26,6 +26,18 @@ describe('setup creates isolated installation secrets', () => {
       expect(readFileSync(output, 'utf8')).toBe(content);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+  it('T20: --app создаёт клиента с теми же провайдерами, что client.mjs и README', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auth-setup-test-'));
+    try {
+      const output = join(dir, '.env');
+      const result = spawnSync(process.execPath, [
+        resolve('scripts/setup.mjs'), '--issuer', 'https://auth.example.com', '--app', 'https://app.example.com', '--output', output,
+      ], { encoding: 'utf8' });
+      expect(result.status).toBe(0);
+      const clients = JSON.parse(readFileSync(output, 'utf8').match(/^CLIENTS_JSON=(.+)$/m)![1]!);
+      expect(clients).toEqual([expect.objectContaining({ id: 'app.example.com', type: 'internal', allowedProviders: ['email', 'google'] })]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('не создаёт конфигурацию с внешним HTTP origin', () => {
     const result = spawnSync(process.execPath, [resolve('scripts/setup.mjs'), '--issuer', 'http://auth.example.com'], { encoding: 'utf8' });
     expect(result.status).toBe(1);

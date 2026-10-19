@@ -15,6 +15,8 @@ export interface IssueParams {
   clientId: string;
   // Тип клиента в момент решения о согласии (internal — без экрана согласия).
   clientType: ClientType;
+  // Регистрация клиента из того же снимка: обмен сверит её с текущей.
+  clientRegistrationId?: string;
   userId: string;
   redirectUri: string;
   codeChallenge: string;
@@ -45,6 +47,7 @@ export class AuthorizationCodeService {
       codeHash: sha256Hex(code),
       clientId: params.clientId,
       clientType: params.clientType,
+      clientRegistrationId: params.clientRegistrationId,
       userId: params.userId,
       redirectUri: params.redirectUri,
       codeChallenge: params.codeChallenge,
@@ -88,6 +91,7 @@ function toGrant(record: AuthorizationCodeRecord): AuthorizationGrant {
     userId: record.userId,
     clientId: record.clientId,
     clientType: record.clientType,
+    clientRegistrationId: record.clientRegistrationId,
     scope: record.scope,
     nonce: record.nonce,
     auth: record.auth,

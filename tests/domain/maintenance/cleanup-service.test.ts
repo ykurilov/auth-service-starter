@@ -65,6 +65,7 @@ function makeSsoSession(over: Partial<SsoSession> = {}): SsoSession {
     userId: 'u1',
     auth: { provider: 'email' },
     tokenHash: over.tokenHash ?? `hash-${over.id ?? '1'}`,
+    chainId: 'chain-1',
     createdAt: NOW,
     lastUsedAt: NOW,
     expiresAt: over.expiresAt ?? NOW,

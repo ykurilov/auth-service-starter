@@ -23,6 +23,7 @@ const config: Config = {
   emailAppName: 'Auth Service',
   rateLimits: {
     identifyPerIp: { limit: 60, windowSeconds: 900 },
+    googleNoncePerIp: { limit: 300, windowSeconds: 900 },
     codeRequest: { limit: 3, windowSeconds: 900 },
     codeRequestPerEmail: { limit: 8, windowSeconds: 3600 },
     codeRequestPerIp: { limit: 20, windowSeconds: 3600 },

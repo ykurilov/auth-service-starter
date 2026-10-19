@@ -24,3 +24,14 @@ describe('grantFitsClient', () => {
     expect(grantFitsClient(client, grant, 'https://evil.example/cb')).toBe(false);
   });
 });
+
+describe('T02: регистрация клиента', () => {
+  it('отклоняет код, выданный прежней регистрации клиента с тем же id', () => {
+    expect(grantFitsClient({ ...client, registrationId: 'r2' }, { ...grant, clientRegistrationId: 'r1' }, cb)).toBe(false);
+    expect(grantFitsClient({ ...client, registrationId: 'r2' }, grant, cb)).toBe(false);
+  });
+
+  it('принимает код той же регистрации', () => {
+    expect(grantFitsClient({ ...client, registrationId: 'r1' }, { ...grant, clientRegistrationId: 'r1' }, cb)).toBe(true);
+  });
+});

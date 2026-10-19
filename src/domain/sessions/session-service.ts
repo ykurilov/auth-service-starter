@@ -29,6 +29,8 @@ export interface StartParams {
   // nonce из authorization request: попадает в первый id_token и не хранится
   // в сессии — при refresh-ротации id_token выпускается уже без него.
   nonce?: string;
+  // Цепочка SSO браузера, через которую выдан код (см. SsoSession.chainId).
+  ssoChainId?: string;
 }
 
 export interface IssuedTokens {
@@ -71,6 +73,7 @@ export class SessionService {
       lastUsedAt: now,
       expiresAt: this.slideExpiry(now),
       revokedAt: null,
+      ...(params.ssoChainId ? { ssoChainId: params.ssoChainId } : {}),
     };
     await this.sessions.save(session);
 

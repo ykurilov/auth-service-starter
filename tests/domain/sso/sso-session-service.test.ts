@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { SsoSessionService } from '../../../src/domain/sso/sso-session-service.js';
-import { InMemorySsoSessionStore } from '../../../src/adapters/repository/in-memory-sso-session-store.js';
+import { InMemorySsoSessionStore, inMemorySsoStores } from '../../../src/adapters/repository/in-memory-sso-session-store.js';
+import { InMemorySessionStore } from '../../../src/adapters/repository/in-memory-session-store.js';
+import { InMemoryRefreshTokenStore } from '../../../src/adapters/repository/in-memory-refresh-token-store.js';
 import { sha256Hex } from '../../../src/domain/shared/hash.js';
+import { randomUUID } from 'node:crypto';
+import type { Session } from '../../../src/domain/sessions/session.js';
 import type { AuthSnapshot } from '../../../src/domain/login/authorization-code.js';
 import { advanceableClock } from '../../helpers/advanceable-clock.js';
 
@@ -10,9 +14,20 @@ const auth: AuthSnapshot = { provider: 'google', email: 'a@b.c' };
 
 function makeService() {
   const store = new InMemorySsoSessionStore();
+  const sessions = new InMemorySessionStore(new InMemoryRefreshTokenStore());
   const clock = advanceableClock(new Date('2026-07-01T00:00:00Z'));
-  const service = new SsoSessionService(store, clock, { ssoTtlSeconds: TTL });
-  return { store, clock, service };
+  const service = new SsoSessionService(inMemorySsoStores(store, sessions), clock, { ssoTtlSeconds: TTL });
+  return { store, sessions, clock, service };
+}
+
+// Сессия приложения пользователя; ssoChainId — цепочка браузера, через которую выдана.
+async function appSession(sessions: InMemorySessionStore, userId: string, ssoChainId?: string): Promise<Session> {
+  const now = new Date('2026-07-01T00:00:00Z');
+  const s: Session = { id: randomUUID(), userId, clientId: 'app', provider: 'email', profile: {}, scope: 'openid',
+    deviceFingerprint: 'fp', ipHash: 'ip', createdAt: now, lastUsedAt: now,
+    expiresAt: new Date('2026-08-01T00:00:00Z'), revokedAt: null, ...(ssoChainId ? { ssoChainId } : {}) };
+  await sessions.save(s);
+  return s;
 }
 
 describe('SsoSessionService', () => {
@@ -65,6 +80,54 @@ describe('SsoSessionService', () => {
   it('R19: неизвестный прежний токен не мешает новой сессии', async () => {
     const { service } = makeService();
     const fresh = await service.start('u1', auth, 'garbage');
+    expect(await service.resolve(fresh.rawToken)).not.toBeNull();
+  });
+});
+
+describe('SsoSessionService.signOut (P3-3)', () => {
+  const revoked = async (sessions: InMemorySessionStore, s: Session) => (await sessions.findById(s.id))!.revokedAt !== null;
+
+  it('живой токен: цепочка браузера и все сессии пользователя на любых устройствах', async () => {
+    const { service, sessions } = makeService();
+    const { session, rawToken } = await service.start('u1', auth);
+    const here = await appSession(sessions, 'u1', session.chainId);
+    const phone = await appSession(sessions, 'u1');
+    await service.signOut(rawToken);
+    expect(await revoked(sessions, here)).toBe(true);
+    expect(await revoked(sessions, phone)).toBe(true);
+  });
+
+  it('истёкший токен гасит только свою цепочку, не сессии на других устройствах', async () => {
+    const { service, sessions, clock } = makeService();
+    const { session, rawToken } = await service.start('u1', auth);
+    const here = await appSession(sessions, 'u1', session.chainId);
+    const phone = await appSession(sessions, 'u1');
+    clock.advance(TTL + 1);
+    await service.signOut(rawToken);
+    expect(await revoked(sessions, here)).toBe(true);
+    expect(await revoked(sessions, phone)).toBe(false);
+  });
+
+  it('отозванный последний токен цепочки (повтор после сбоя) доделывает отзыв цепочки, но не трогает другие устройства', async () => {
+    const { service, sessions, store } = makeService();
+    const { session, rawToken } = await service.start('u1', auth);
+    const here = await appSession(sessions, 'u1', session.chainId);
+    const phone = await appSession(sessions, 'u1');
+    await store.revoke(session.id, new Date('2026-07-01T00:00:01Z'));
+    await service.signOut(rawToken);
+    expect(await revoked(sessions, here)).toBe(true);
+    expect(await revoked(sessions, phone)).toBe(false);
+  });
+
+  it('токен, который браузер уже заменил новым входом, ничего не гасит', async () => {
+    const { service, sessions } = makeService();
+    const old = await service.start('u1', auth);
+    const fresh = await service.start('u1', auth, old.rawToken);
+    const here = await appSession(sessions, 'u1', fresh.session.chainId);
+    const phone = await appSession(sessions, 'u1');
+    await service.signOut(old.rawToken);
+    expect(await revoked(sessions, here)).toBe(false);
+    expect(await revoked(sessions, phone)).toBe(false);
     expect(await service.resolve(fresh.rawToken)).not.toBeNull();
   });
 });

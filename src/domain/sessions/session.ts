@@ -23,6 +23,8 @@ export interface Session {
   lastUsedAt: Date;
   expiresAt: Date;           // скользящее продление
   revokedAt: Date | null;
+  // Цепочка SSO-сессий браузера, через которую выдана сессия (SsoSession.chainId).
+  ssoChainId?: string;
 }
 
 export interface SessionStore {
@@ -35,6 +37,9 @@ export interface SessionStore {
   revokeForClient(clientId: string, at: Date, allowedProviders?: string[]): Promise<void>;
   // Отзывает все живые сессии пользователя во всех клиентах.
   revokeForUser(userId: string, at: Date): Promise<void>;
+  // Отзывает живые сессии, выданные через SSO-цепочку браузера, а с userId —
+  // ещё и все живые сессии этого пользователя. Одним изменением.
+  revokeForSsoChain(chainId: string, at: Date, userId?: string): Promise<void>;
   // Живые (не отозванные и не истёкшие на момент now) сессии пользователя.
   findActiveByUser(userId: string, now: Date): Promise<Session[]>;
   // Удаляет сессии с expires_at < before ИЛИ (отозвана И revoked_at < before).

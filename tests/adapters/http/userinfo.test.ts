@@ -96,4 +96,67 @@ describe('GET /userinfo', () => {
     expect(res.json().error).toBe('invalid_token');
     await app.close();
   });
+  it('T30: ответ с данными пользователя не кешируется (Cache-Control: no-store)', async () => {
+    const deps = await makeTestDeps();
+    const app = buildServer(deps);
+    const access = await accessToken(app);
+    const ok = await app.inject({ method: 'GET', url: '/userinfo', headers: { authorization: 'Bearer ' + access } });
+    expect(ok.headers['cache-control']).toBe('no-store');
+    const denied = await app.inject({ method: 'GET', url: '/userinfo' });
+    expect(denied.headers['cache-control']).toBe('no-store');
+    await app.close();
+  });
+});
+
+describe('POST /userinfo', () => {
+  it('T30: токен в заголовке Authorization → тот же ответ, что и у GET', async () => {
+    const deps = await makeTestDeps();
+    const app = buildServer(deps);
+    const access = await accessToken(app);
+    const get = await app.inject({ method: 'GET', url: '/userinfo', headers: { authorization: 'Bearer ' + access } });
+    const post = await app.inject({ method: 'POST', url: '/userinfo', headers: { authorization: 'Bearer ' + access } });
+    expect(post.statusCode).toBe(200);
+    expect(post.json()).toEqual(get.json());
+    expect(post.headers['cache-control']).toBe('no-store');
+    await app.close();
+  });
+
+  it('T30: токен в теле формы (access_token, RFC 6750 §2.2) → 200', async () => {
+    const deps = await makeTestDeps();
+    const app = buildServer(deps);
+    const access = await accessToken(app);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/userinfo',
+      payload: new URLSearchParams({ access_token: access }).toString(),
+      headers: FORM_HEADERS,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().email).toBe('user@x.com');
+    await app.close();
+  });
+
+  it('T30: токен сразу и в заголовке, и в теле → 400 invalid_request', async () => {
+    const deps = await makeTestDeps();
+    const app = buildServer(deps);
+    const access = await accessToken(app);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/userinfo',
+      payload: new URLSearchParams({ access_token: access }).toString(),
+      headers: { ...FORM_HEADERS, authorization: 'Bearer ' + access },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('invalid_request');
+    await app.close();
+  });
+
+  it('T30: без токена → 401 invalid_token', async () => {
+    const deps = await makeTestDeps();
+    const app = buildServer(deps);
+    const res = await app.inject({ method: 'POST', url: '/userinfo' });
+    expect(res.statusCode).toBe(401);
+    expect(res.headers['www-authenticate']).toBe('Bearer');
+    await app.close();
+  });
 });

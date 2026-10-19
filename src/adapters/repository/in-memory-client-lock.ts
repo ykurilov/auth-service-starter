@@ -8,7 +8,7 @@ export class InMemoryClientLock implements ClientLock {
 
   constructor(
     private readonly registry: ClientWriteStore,
-    private readonly services: Pick<ClientScope, 'codes' | 'sessions'>,
+    private readonly services: Pick<ClientScope, 'codes' | 'sessions' | 'sso'>,
     private readonly invalidateCodes: (clientId: string) => Promise<void>,
   ) {}
 

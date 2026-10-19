@@ -59,14 +59,12 @@ export function registerLogout(app: FastifyInstance, deps: HttpDeps): void {
     if (!client)
       return html(reply, 400, errorPage('Некорректный запрос', 'Неизвестное приложение'));
 
+    // Экран обещает выход во всех приложениях: гасим SSO-цепочку браузера,
+    // сессии приложений, выданные через неё, и сессии пользователя во всех
+    // клиентах, а не только в том, откуда пришёл выход. Cookie стираем только
+    // после успешного отзыва: повторный выход после сбоя его доделает.
     const token = readSsoCookie(req, deps.config);
-    const session = token ? await deps.sso.resolve(token) : null;
-    // Экран обещает выход во всех приложениях: гасим SSO-сессию браузера и
-    // сессии пользователя во всех клиентах, а не только в том, откуда пришёл выход.
-    if (session) {
-      await deps.sso.revoke(session.id);
-      await deps.sessions.revokeAllForUser(session.userId);
-    }
+    if (token) await deps.sso.signOut(token);
     clearSsoCookie(reply, deps.config);
 
     const target = allowedPostLogout(

@@ -35,7 +35,7 @@ import { InMemoryAuthorizationCodeStore } from './adapters/repository/in-memory-
 import { InMemoryEmailSecretStore } from './adapters/repository/in-memory-email-secret-store.js';
 import { InMemorySessionStore } from './adapters/repository/in-memory-session-store.js';
 import { InMemoryRefreshTokenStore } from './adapters/repository/in-memory-refresh-token-store.js';
-import { InMemorySsoSessionStore } from './adapters/repository/in-memory-sso-session-store.js';
+import { InMemorySsoSessionStore, inMemorySsoStores } from './adapters/repository/in-memory-sso-session-store.js';
 import { SsoSessionService } from './domain/sso/sso-session-service.js';
 import { InMemoryRateLimiter } from './adapters/ratelimit/in-memory-rate-limiter.js';
 import { createRedisRateLimiter } from './adapters/ratelimit/redis-rate-limiter.js';
@@ -49,18 +49,19 @@ import { PgIdentityRepository } from './adapters/repository/pg/pg-identity-repos
 import { PgClientRegistry } from './adapters/repository/pg/pg-client-registry.js';
 import { PgSessionStore } from './adapters/repository/pg/pg-session-store.js';
 import { PgRefreshTokenStore } from './adapters/repository/pg/pg-refresh-token-store.js';
-import { PgSsoSessionStore } from './adapters/repository/pg/pg-sso-session-store.js';
+import { PgSsoSessionStore, pgSsoStores } from './adapters/repository/pg/pg-sso-session-store.js';
 import { PgAuthorizationCodeStore } from './adapters/repository/pg/pg-authorization-code-store.js';
 import { PgClientLock } from './adapters/repository/pg/pg-client-lock.js';
 import { InMemoryClientLock } from './adapters/repository/in-memory-client-lock.js';
 import type { ClientLock } from './domain/clients/client-lock.js';
 import { PgEmailSecretStore } from './adapters/repository/pg/pg-email-secret-store.js';
 import { CleanupService } from './domain/maintenance/cleanup-service.js';
+import { startCleanupSchedule, type CleanupSchedule } from './domain/maintenance/cleanup-schedule.js';
 import type { IdentityRepository } from './domain/identity/identity-repository.js';
 import type { ClientRegistry, ClientWriteStore } from './domain/clients/client.js';
 import type { SessionStore } from './domain/sessions/session.js';
 import type { RefreshTokenStore } from './domain/sessions/refresh-token.js';
-import type { SsoSessionStore } from './domain/sso/sso-session.js';
+import type { SsoSessionStore, SsoStores } from './domain/sso/sso-session.js';
 import type { AuthorizationCodeStore } from './domain/login/authorization-code.js';
 
 export interface BootstrapOptions {
@@ -108,17 +109,20 @@ export async function bootstrap(
   let sessionStore: SessionStore;
   let refreshTokenStore: RefreshTokenStore;
   let ssoSessionStore: SsoSessionStore;
+  // SSO-сессии вместе с сессиями приложений (смена аккаунта и выход — атомарно).
+  let ssoStores: SsoStores;
   let emailSecretStore: EmailSecretStore;
   let loginChallengeStore: LoginChallengeStore;
   let googleNonceStore: GoogleNonceStore;
   // Лимитер кодов из письма: в Postgres (общий для экземпляров), без БД — in-memory.
   let otpRateLimiter: RateLimiter;
+  let cleanupSchedule: CleanupSchedule | undefined;
 
   if (config.databaseUrl) {
     db = opts?.dbFactory
       ? opts.dbFactory(config.databaseUrl)
       : createPool(config.databaseUrl, (err) =>
-          logger.error({ err }, 'обрыв idle-соединения в пуле Postgres'),
+          logger.error({ err }, 'обрыв соединения с Postgres'),
         );
     // Миграции идут под общей advisory-блокировкой: копии, стартующие
     // одновременно, применяют их по очереди, а не падают друг на друге.
@@ -135,6 +139,7 @@ export async function bootstrap(
     sessionStore = new PgSessionStore(db);
     refreshTokenStore = new PgRefreshTokenStore(db);
     ssoSessionStore = new PgSsoSessionStore(db);
+    ssoStores = pgSsoStores(db);
     emailSecretStore = new PgEmailSecretStore(db);
     loginChallengeStore = new PgLoginChallengeStore(db);
     googleNonceStore = new PgGoogleNonceStore(db);
@@ -171,10 +176,8 @@ export async function bootstrap(
 
     // Автоочистка устаревших данных (коды, email-секреты, сессии, sso-сессии).
     // Только для БД — in-memory-хранилища живут не дольше процесса и сами
-    // теряются при рестарте. Первый запуск — сразу (не ждать час после старта).
-    // Самоперепланирование вместо setInterval: следующий запуск планируется
-    // только после завершения предыдущего, поэтому наложение прогонов
-    // исключено даже при медленной БД. unref: таймер не держит процесс живым.
+    // теряются при рестарте. Останавливается при закрытии сервера (onClose
+    // ниже), до закрытия пула.
     const cleanup = new CleanupService(
       authCodeStore,
       emailSecretStore,
@@ -183,17 +186,14 @@ export async function bootstrap(
       systemClock,
       [loginChallengeStore, googleNonceStore, pgOtpLimiter],
     );
-    const runCleanup = async (): Promise<void> => {
-      try {
+    cleanupSchedule = startCleanupSchedule(
+      async () => {
         const counts = await cleanup.runOnce();
         logger.info({ ...counts }, 'очистка устаревших данных');
-      } catch (err) {
-        logger.error({ err }, 'очистка устаревших данных не удалась');
-      } finally {
-        setTimeout(() => void runCleanup(), 3600 * 1000).unref();
-      }
-    };
-    void runCleanup();
+      },
+      3600 * 1000,
+      (err) => logger.error({ err }, 'очистка устаревших данных не удалась'),
+    );
   } else {
     identityRepo = new InMemoryIdentityRepository(systemClock);
     // Реестр клиентов из конфигурации (CLIENTS_JSON). Один экземпляр обслуживает
@@ -205,6 +205,7 @@ export async function bootstrap(
     sessionStore = new InMemorySessionStore(inMemoryRefreshTokens);
     refreshTokenStore = inMemoryRefreshTokens;
     ssoSessionStore = new InMemorySsoSessionStore();
+    ssoStores = inMemorySsoStores(ssoSessionStore, sessionStore);
     emailSecretStore = new InMemoryEmailSecretStore();
     loginChallengeStore = new InMemoryLoginChallengeStore();
     googleNonceStore = new InMemoryGoogleNonceStore();
@@ -245,17 +246,18 @@ export async function bootstrap(
   const clientLock: ClientLock = db
     ? new PgClientLock(db, (tx) => ({
         codes: new AuthorizationCodeService(new PgAuthorizationCodeStore(tx), systemClock, 60),
+        sso: new PgSsoSessionStore(tx),
         sessions: new SessionService(new PgSessionStore(tx), new PgRefreshTokenStore(tx),
           tokenService, systemClock, sessionConfig),
       }))
     : new InMemoryClientLock(
         clientRegistry as ClientWriteStore,
-        { codes: authCodeService, sessions: sessionService },
+        { codes: authCodeService, sessions: sessionService, sso: ssoSessionStore },
         (clientId) => inMemoryCodeStore!.invalidateForClient(clientId, systemClock.now()),
       );
 
   // Боевой путь — Resend (нужны ключ и адрес отправителя). Иначе LogMailer:
-  // dev/тест-дефолт, письма (коды входа) уходят в лог, не отправляются.
+  // письма не отправляются, в журнал попадает только факт письма без кода.
   let mailer: Mailer;
   if (config.resendApiKey && config.emailFrom) {
     mailer = createResendMailer({
@@ -267,7 +269,7 @@ export async function bootstrap(
   } else {
     logger.warn(
       { resend: Boolean(config.resendApiKey), from: Boolean(config.emailFrom) },
-      'почта не настроена — письма (коды входа) уходят в лог, не отправляются',
+      'почта не настроена — письма с кодами не отправляются',
     );
     mailer = new LogMailer(logger);
   }
@@ -284,7 +286,7 @@ export async function bootstrap(
     ? new GoogleProvider(createGoogleTokenVerifier(config.googleClientId), googleNonces)
     : undefined;
 
-  const ssoService = new SsoSessionService(ssoSessionStore, systemClock, {
+  const ssoService = new SsoSessionService(ssoStores, systemClock, {
     ssoTtlSeconds: config.ssoTtlSeconds,
   });
 
@@ -322,6 +324,11 @@ export async function bootstrap(
   };
 
   const app = buildServer(deps);
+  // app.close() (shutdownGracefully) дожидается идущей очистки до закрытия пула.
+  if (cleanupSchedule) {
+    const schedule = cleanupSchedule;
+    app.addHook('onClose', async () => schedule.stop());
+  }
 
   logger.info(
     { kid: activeSigningKey.kid, keys: signingKeys.length, issuer: config.issuerUrl },

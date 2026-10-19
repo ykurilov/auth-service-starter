@@ -38,6 +38,14 @@ export class PgRateLimiter implements RateLimiter {
     };
   }
 
+  async refund(key: string): Promise<void> {
+    await this.db.query(
+      `update rate_limit_counters set count = count - 1
+        where key_hash = $1 and count > 0 and expires_at > $2`,
+      [sha256Hex(`rl:${key}`), this.clock.now()],
+    );
+  }
+
   async deleteExpired(before: Date): Promise<number> {
     const { rowCount } = await this.db.query(
       'delete from rate_limit_counters where expires_at < $1',

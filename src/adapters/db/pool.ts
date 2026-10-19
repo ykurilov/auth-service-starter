@@ -119,36 +119,61 @@ export function createPool(
   // Без слушателя 'error' обрыв idle-соединения (рестарт Postgres, сеть)
   // валит весь процесс. Пул сам пересоздаст соединение — достаточно лога.
   pool.on('error', (err) => onError?.(err));
+
+  // Выданный клиент пул не слушает: на время владения ставим свой обработчик
+  // 'error', иначе обрыв посреди withTransaction/withConnection валит процесс.
+  // Оборванное или сломанное соединение release уничтожает, а не возвращает
+  // в пул; текущая операция падает на следующем запросе.
+  async function checkout() {
+    const client = await pool.connect();
+    let broken: Error | undefined;
+    const onClientError = (err: Error) => {
+      broken ??= err;
+      onError?.(err);
+    };
+    client.on('error', onClientError);
+    return {
+      client,
+      markBroken(err: Error) { broken ??= err; },
+      release() {
+        client.off('error', onClientError);
+        client.release(broken);
+      },
+    };
+  }
   return {
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
       const result = await pool.query(sql, params);
       return { rows: result.rows as T[], rowCount: result.rowCount ?? 0 };
     },
     async withTransaction<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
-      const client = await pool.connect();
-      const result = await inTransaction(sendOn(client), fn);
-      client.release('broken' in result ? result.broken : undefined);
-      if ('value' in result) return result.value;
-      throw result.error;
+      const lease = await checkout();
+      try {
+        const result = await inTransaction(sendOn(lease.client), fn);
+        if ('broken' in result && result.broken) lease.markBroken(result.broken);
+        if ('value' in result) return result.value;
+        throw result.error;
+      } finally {
+        lease.release();
+      }
     },
     async withConnection<T>(fn: (conn: Db) => Promise<T>, options?: ConnectionOptions): Promise<T> {
-      const client = await pool.connect();
+      const lease = await checkout();
       const unlimited = options?.withoutQueryLimits ?? false;
-      const send = sendOn(client, unlimited);
-      let broken: Error | undefined;
+      const send = sendOn(lease.client, unlimited);
       try {
         if (unlimited) await send('set statement_timeout = 0');
-        const value = await fn(connectionDb(send, (err) => { broken = err; }));
+        const value = await fn(connectionDb(send, lease.markBroken));
         // RESET возвращает предел, заданный пулом при подключении.
         if (unlimited) await send('reset statement_timeout');
         return value;
       } catch (err) {
         // Состояние соединения после сбоя неизвестно (в том числе удержанные
         // сессионные блокировки): закрываем его, а не возвращаем в пул.
-        broken ??= err instanceof Error ? err : new Error('connection failed');
+        lease.markBroken(err instanceof Error ? err : new Error('connection failed'));
         throw err;
       } finally {
-        client.release(broken);
+        lease.release();
       }
     },
     async close(): Promise<void> {

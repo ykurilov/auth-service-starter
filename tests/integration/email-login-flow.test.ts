@@ -6,6 +6,9 @@ import { InMemoryLoginChallengeStore } from '../../src/adapters/repository/in-me
 import { FakeMailer } from '../../src/adapters/mail/fake-mailer.js';
 import { fakeClock } from '../helpers/fake-clock.js';
 
+// Клиент, под которым начинается и проверяется попытка входа.
+const TEST_CLIENT = { id: 'app', registrationId: '00000000-0000-4000-8000-000000000001' };
+
 const T0 = new Date('2026-07-01T00:00:00Z');
 
 function makeCodeProvider(clock: ReturnType<typeof fakeClock>): EmailCodeProvider {
@@ -18,8 +21,8 @@ function makeCodeProvider(clock: ReturnType<typeof fakeClock>): EmailCodeProvide
 
 // Вход по коду в рамках одной попытки (браузер 'b').
 async function codeLogin(provider: EmailCodeProvider, email: string) {
-  const { handle } = await provider.start({ email, binding: 'b' });
-  return provider.verify({ handle, binding: 'b', code: 'CODE55' });
+  const { handle } = await provider.start({ email, binding: 'b', client: TEST_CLIENT });
+  return provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: 'CODE55' });
 }
 
 describe('интеграция входа по email (код)', () => {

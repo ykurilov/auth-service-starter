@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   applyClientPatch,
   type Client,
@@ -9,7 +10,7 @@ export class InMemoryClientRegistry implements ClientWriteStore {
   private readonly byId = new Map<string, Client>();
 
   constructor(clients: Client[] = []) {
-    for (const c of clients) this.byId.set(c.id, InMemoryClientRegistry.copy(c));
+    for (const c of clients) this.byId.set(c.id, InMemoryClientRegistry.registered(c));
   }
 
   async findClient(id: string): Promise<Client | null> {
@@ -25,7 +26,12 @@ export class InMemoryClientRegistry implements ClientWriteStore {
     if (this.byId.has(client.id)) {
       throw new Error(`client already exists: ${client.id}`);
     }
-    this.byId.set(client.id, InMemoryClientRegistry.copy(client));
+    this.byId.set(client.id, InMemoryClientRegistry.registered(client));
+  }
+
+  // Каждое создание — новая регистрация (как clients.registration_id в БД).
+  private static registered(c: Client): Client {
+    return { ...InMemoryClientRegistry.copy(c), registrationId: randomUUID() };
   }
 
   async update(id: string, patch: ClientPatch): Promise<void> {

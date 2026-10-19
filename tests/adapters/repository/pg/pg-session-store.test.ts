@@ -57,6 +57,27 @@ describe('PgSessionStore на pg-mem', () => {
     expect(found?.profile).toEqual(session.profile);
   });
 
+  it('T12: ssoChainId переживает round-trip; revokeForSsoChain гасит цепочку и (с userId) все сессии пользователя', async () => {
+    const chain = randomUUID();
+    const user = randomUUID();
+    const inChain = makeSession({ ssoChainId: chain });
+    const otherChain = makeSession({ ssoChainId: randomUUID() });
+    const sameUser = makeSession({ userId: user });
+    const noChain = makeSession();
+    for (const s of [inChain, otherChain, sameUser, noChain]) await store.save(s);
+    expect(await store.findById(inChain.id)).toEqual(inChain);
+    expect((await store.findById(noChain.id))).not.toHaveProperty('ssoChainId');
+
+    const at = new Date('2026-01-02T00:00:00.000Z');
+    await store.revokeForSsoChain(chain, at);
+    expect((await store.findById(inChain.id))?.revokedAt).toEqual(at);
+    expect((await store.findById(sameUser.id))?.revokedAt).toBeNull();
+    await store.revokeForSsoChain(randomUUID(), at, user);
+    expect((await store.findById(sameUser.id))?.revokedAt).toEqual(at);
+    expect((await store.findById(otherChain.id))?.revokedAt).toBeNull();
+    expect((await store.findById(noChain.id))?.revokedAt).toBeNull();
+  });
+
   it('findById неизвестного -> null', async () => {
     expect(await store.findById(randomUUID())).toBeNull();
   });

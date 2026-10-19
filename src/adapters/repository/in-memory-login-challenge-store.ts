@@ -41,19 +41,24 @@ export class InMemoryLoginChallengeStore implements LoginChallengeStore {
     return InMemoryLoginChallengeStore.copy(r);
   }
 
-  async rotateCode(
-    handleHash: string,
-    bindingHash: string,
-    codeHash: string,
-    expiresAt: Date,
-    now: Date,
-  ): Promise<LoginChallengeRecord | null> {
+  async reserveResend(handleHash: string, bindingHash: string, now: Date): Promise<LoginChallengeRecord | null> {
     const r = this.alive(handleHash, bindingHash, now);
     if (!r || r.resends >= r.maxResends || r.attempts >= r.maxAttempts) return null;
-    r.codeHash = codeHash;
-    r.expiresAt = expiresAt;
     r.resends += 1;
     return InMemoryLoginChallengeStore.copy(r);
+  }
+
+  async replaceCode(id: string, codeHash: string, expiresAt: Date, now: Date): Promise<boolean> {
+    const r = this.records.find((x) => x.id === id);
+    if (!r || r.consumedAt !== null || r.expiresAt.getTime() <= now.getTime()) return false;
+    r.codeHash = codeHash;
+    r.expiresAt = expiresAt;
+    return true;
+  }
+
+  async releaseResend(id: string): Promise<void> {
+    const r = this.records.find((x) => x.id === id);
+    if (r && r.resends > 0) r.resends -= 1;
   }
 
   async consume(id: string, at: Date): Promise<boolean> {

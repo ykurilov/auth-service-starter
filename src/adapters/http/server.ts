@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import { trustedProxy } from './trusted-proxy.js';
 import formbody from '@fastify/formbody';
 import cookie from '@fastify/cookie';
@@ -12,6 +12,15 @@ import { registerRevoke } from './routes/revoke.js';
 import { registerAdminClients } from './routes/admin-clients.js';
 import { registerAssets } from './routes/assets.js';
 import { homePage } from './views/home-page.js';
+import { errorPage } from './views/error-page.js';
+import { html } from './routes/authorize.js';
+
+// Страницы, которые открывает браузер пользователя (вход и выход): ответ об
+// ошибке на них — HTML-страница, а не JSON.
+function isBrowserRoute(url: string): boolean {
+  const path = url.split('?')[0]!;
+  return ['/authorize', '/logout'].some((p) => path === p || path.startsWith(`${p}/`));
+}
 
 export function buildServer(deps: HttpDeps): FastifyInstance {
   // Forwarded-заголовки принимаем только от адресов доверенных прокси.
@@ -34,10 +43,23 @@ export function buildServer(deps: HttpDeps): FastifyInstance {
   });
 
   // Защита в глубину: непойманная ошибка не должна утекать наружу доменным
-  // сообщением или стеком. Отдаём нейтральный ответ без деталей.
-  app.setErrorHandler((err, _req, reply) => {
+  // сообщением или стеком. Отдаём нейтральный ответ без деталей. Ошибки
+  // разбора тела (битый JSON, чужой Content-Type, слишком большое тело) —
+  // ошибка клиента: свой код 4xx, без записи error. Браузерные страницы
+  // получают HTML, а не JSON.
+  app.setErrorHandler((err: FastifyError, req, reply) => {
+    const browser = isBrowserRoute(req.url);
+    const status = err.statusCode;
+    if (status !== undefined && status >= 400 && status < 500) {
+      deps.logger.info({ errorCode: err.code, status }, 'некорректный запрос');
+      return browser
+        ? html(reply, status, errorPage('Некорректный запрос', 'Не удалось прочитать запрос'))
+        : reply.status(status).send({ error: 'invalid_request' });
+    }
     deps.logger.error({ err }, 'необработанная ошибка HTTP-слоя');
-    return reply.status(500).send({ error: 'server_error' });
+    return browser
+      ? html(reply, 500, errorPage('Ошибка сервера', 'Попробуйте позже'))
+      : reply.status(500).send({ error: 'server_error' });
   });
 
   app.get('/', async (_req, reply) => reply.type('text/html; charset=utf-8').send(homePage()));

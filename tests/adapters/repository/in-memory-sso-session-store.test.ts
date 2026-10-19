@@ -8,6 +8,7 @@ function session(overrides: Partial<SsoSession> = {}): SsoSession {
     userId: 'u1',
     auth: { provider: 'google', email: 'a@b.c' },
     tokenHash: 'h1',
+    chainId: 'chain-1',
     createdAt: new Date('2026-07-01T00:00:00Z'),
     lastUsedAt: new Date('2026-07-01T00:00:00Z'),
     expiresAt: new Date('2026-07-02T00:00:00Z'),
@@ -17,6 +18,18 @@ function session(overrides: Partial<SsoSession> = {}): SsoSession {
 }
 
 describe('InMemorySsoSessionStore', () => {
+  it('T12: findByLogin и revokeChain', async () => {
+    const store = new InMemorySsoSessionStore();
+    await store.save(session({ auth: { provider: 'email', loginId: 'l1' } }));
+    await store.save(session({ id: 's2', tokenHash: 'h2', chainId: 'chain-2' }));
+    expect((await store.findByLogin('l1'))?.id).toBe('s1');
+    expect(await store.findByLogin('nope')).toBeNull();
+    const at = new Date('2026-07-01T01:00:00Z');
+    await store.revokeChain('chain-1', at);
+    expect((await store.findByHash('h1'))?.revokedAt).toEqual(at);
+    expect((await store.findByHash('h2'))?.revokedAt).toBeNull();
+  });
+
   it('save + findByHash возвращает копию (мутация результата не портит стор)', async () => {
     const store = new InMemorySsoSessionStore();
     await store.save(session());

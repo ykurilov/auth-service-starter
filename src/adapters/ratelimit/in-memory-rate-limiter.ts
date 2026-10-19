@@ -53,6 +53,11 @@ export class InMemoryRateLimiter implements RateLimiter {
     return { allowed, remaining, retryAfterSeconds };
   }
 
+  async refund(key: string): Promise<void> {
+    const w = this.windows.get(key);
+    if (w && this.clock.now().getTime() < w.expiresAt && w.count > 0) w.count--;
+  }
+
   // Число отслеживаемых ключей — для наблюдаемости/метрик и проверки в тестах.
   get trackedKeys(): number {
     return this.windows.size;

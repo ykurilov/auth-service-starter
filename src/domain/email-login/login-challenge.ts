@@ -13,11 +13,21 @@ export interface PendingLink {
   name?: string;
 }
 
+// Клиент, под которым начата попытка: id и регистрация из проверенного снимка.
+export interface ChallengeClient {
+  id: string;
+  registrationId?: string;
+}
+
 export interface LoginChallengeRecord {
   id: string;
   handleHash: string;
   bindingHash: string;
   email: string; // нормализованный и прошедший parseEmailAddress
+  // Клиент и его регистрация на старте попытки. null у clientId — попытка,
+  // начатая до миграции 0014: клиента она не знает и не принимается никем.
+  clientId: string | null;
+  clientRegistrationId: string | null;
   codeHash: string;
   attempts: number;
   maxAttempts: number;
@@ -37,16 +47,16 @@ export interface LoginChallengeStore {
   // attempts < maxAttempts. null — проверок не осталось (или попытки нет).
   // Возвращает запись ПОСЛЕ увеличения. SQL: UPDATE ... WHERE attempts < max RETURNING.
   claimAttempt(handleHash: string, bindingHash: string, now: Date): Promise<LoginChallengeRecord | null>;
-  // Атомарная замена кода (переотправка): новый hash и срок, resends + 1, только
-  // если попытка жива, resends < maxResends и проверки ещё остались. Старый код
-  // перестаёт действовать в тот же момент. attempts не сбрасывается.
-  rotateCode(
-    handleHash: string,
-    bindingHash: string,
-    codeHash: string,
-    expiresAt: Date,
-    now: Date,
-  ): Promise<LoginChallengeRecord | null>;
+  // Переотправка в три шага. reserveResend атомарно занимает слот (resends + 1,
+  // только если попытка жива, resends < maxResends и проверки ещё остались) —
+  // до отправки письма, поэтому параллельные запросы не превысят лимит. Код
+  // пока прежний. SQL: UPDATE ... WHERE resends < max RETURNING.
+  reserveResend(handleHash: string, bindingHash: string, now: Date): Promise<LoginChallengeRecord | null>;
+  // Письмо ушло: новый hash и срок для живой попытки. Прежний код перестаёт
+  // действовать в тот же момент. false — попытку погасили, пока шло письмо.
+  replaceCode(id: string, codeHash: string, expiresAt: Date, now: Date): Promise<boolean>;
+  // Письмо не ушло: слот возвращается, прежний код остаётся.
+  releaseResend(id: string): Promise<void>;
   // CAS-гашение после верного кода: true — этот вызов погасил.
   consume(id: string, at: Date): Promise<boolean>;
   deleteExpired(before: Date): Promise<number>;

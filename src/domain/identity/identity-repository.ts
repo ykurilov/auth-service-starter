@@ -18,6 +18,8 @@ export interface IdentityRepository {
   findEmail(userId: string, email: string): Promise<EmailAddress | null>;
   findEmailsForUser(userId: string): Promise<EmailAddress[]>;
   markEmailVerified(emailId: string): Promise<void>;
+  // Задаёт имя пользователя, только если оно ещё пустое.
+  fillDisplayName(userId: string, name: string): Promise<void>;
   // Выполняет fn атомарно и взаимоисключающе по ключам lockKeys: все записи fn
   // либо фиксируются целиком, либо откатываются (нет «сирот»), а параллельные
   // вызовы с пересекающимися ключами идут строго по очереди. fn получает

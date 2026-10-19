@@ -16,6 +16,9 @@ const migrationsDir = path.resolve(
   '../../../../migrations',
 );
 
+// Регистрация CLIENT, созданного в beforeEach: коды выдаются по её снимку.
+let registrationId: string | undefined;
+
 function makeRecord(
   overrides: Partial<AuthorizationCodeRecord> = {},
 ): AuthorizationCodeRecord {
@@ -24,6 +27,7 @@ function makeRecord(
     codeHash: `hash-${randomUUID()}`,
     clientId: 'app-1',
     clientType: 'internal',
+    clientRegistrationId: registrationId,
     userId: randomUUID(),
     redirectUri: 'https://app.example/callback',
     codeChallenge: 'challenge-abc',
@@ -49,7 +53,9 @@ describe('PgAuthorizationCodeStore на pg-mem', () => {
     db = createMemDb();
     await runMigrations(db, migrationsDir);
     store = new PgAuthorizationCodeStore(db);
-    await new PgClientRegistry(db).create(CLIENT);
+    const registry = new PgClientRegistry(db);
+    await registry.create(CLIENT);
+    registrationId = (await registry.findClient(CLIENT.id))?.registrationId;
   });
 
   afterEach(async () => {
@@ -108,15 +114,21 @@ describe('PgAuthorizationCodeStore на pg-mem', () => {
     const before = makeRecord();
     await store.save(before);
     await registry.delete(CLIENT.id);
+    // Вход решён по снимку удалённой регистрации, код записан после удаления.
     const orphan = makeRecord();
     await store.save(orphan);
     await registry.create(CLIENT);
-    const fresh = makeRecord();
+    // Вход, решённый по снимку прежней регистрации, записан уже после
+    // повторного создания: подзапрос к таблице дал бы новую регистрацию.
+    const late = makeRecord();
+    await store.save(late);
+    const fresh = makeRecord({ clientRegistrationId: (await registry.findClient(CLIENT.id))?.registrationId });
     await store.save(fresh);
 
     const now = new Date('2026-01-01T00:00:00.000Z');
     expect(await store.findActiveByHash(before.codeHash, now)).toBeNull();
     expect(await store.findActiveByHash(orphan.codeHash, now)).toBeNull();
+    expect(await store.findActiveByHash(late.codeHash, now)).toBeNull();
     expect(await store.findActiveByHash(fresh.codeHash, now)).toEqual(fresh);
   });
 

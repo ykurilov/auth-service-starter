@@ -1,12 +1,24 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { HttpDeps } from '../deps.js';
 import { profileForScope } from '../../../domain/tokens/scope.js';
 
+// Access token из запроса: заголовок Authorization: Bearer или (только POST)
+// поле access_token формы (RFC 6750 §2.2). Оба способа сразу — ошибка запроса.
+function bearerToken(req: FastifyRequest): string | null | 'ambiguous' {
+  const auth = req.headers['authorization'];
+  const fromHeader = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const body = req.body as { access_token?: unknown } | undefined;
+  const fromBody = req.method === 'POST' && typeof body?.access_token === 'string' ? body.access_token : null;
+  if (fromHeader !== null && fromBody !== null) return 'ambiguous';
+  return fromHeader ?? fromBody;
+}
+
 export function registerUserinfo(app: FastifyInstance, deps: HttpDeps): void {
-  app.get('/userinfo', async (req, reply) => {
-    const auth = req.headers['authorization'];
-    const token =
-      typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const handler = async (req: FastifyRequest, reply: FastifyReply) => {
+    // Профиль пользователя не должен оседать в кешах прокси и браузера.
+    reply.header('cache-control', 'no-store');
+    const token = bearerToken(req);
+    if (token === 'ambiguous') return reply.status(400).send({ error: 'invalid_request' });
     if (!token) {
       reply.header('www-authenticate', 'Bearer');
       return reply.status(401).send({ error: 'invalid_token' });
@@ -38,5 +50,8 @@ export function registerUserinfo(app: FastifyInstance, deps: HttpDeps): void {
         ? { email_verified: scoped.emailVerified }
         : {}),
     });
-  });
+  };
+  // OIDC Core 5.3.1: UserInfo обязан поддерживать GET и POST.
+  app.get('/userinfo', handler);
+  app.post('/userinfo', handler);
 }

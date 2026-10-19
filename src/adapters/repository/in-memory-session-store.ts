@@ -55,6 +55,14 @@ export class InMemorySessionStore implements SessionStore {
     }
   }
 
+  async revokeForSsoChain(chainId: string, at: Date, userId?: string): Promise<void> {
+    for (const s of this.sessions.values()) {
+      if (s.revokedAt === null && (s.ssoChainId === chainId || (userId !== undefined && s.userId === userId))) {
+        s.revokedAt = at;
+      }
+    }
+  }
+
   async findActiveByUser(userId: string, now: Date): Promise<Session[]> {
     return [...this.sessions.values()]
       .filter(

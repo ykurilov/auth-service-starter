@@ -13,6 +13,7 @@ interface AuthorizationCodeRow {
   code_hash: string;
   client_id: string;
   client_type: ClientType;
+  client_registration_id: string | null;
   user_id: string;
   redirect_uri: string;
   code_challenge: string;
@@ -24,14 +25,15 @@ interface AuthorizationCodeRow {
 }
 
 const SELECT_COLUMNS = [
-  'id', 'code_hash', 'client_id', 'client_type', 'user_id', 'redirect_uri', 'code_challenge',
+  'id', 'code_hash', 'client_id', 'client_type', 'client_registration_id', 'user_id', 'redirect_uri', 'code_challenge',
   'scope', 'nonce', 'auth', 'expires_at', 'consumed_at',
 ].map((column) => `ac.${column}`).join(', ');
 
 // Postgres-реализация AuthorizationCodeStore. Контракт совпадает с in-memory
 // эталоном. consume — атомарный CAS. Все запросы параметризованы.
-// Код привязан к регистрации клиента (clients.registration_id) на момент
-// записи: клиент, удалённый и созданный заново с тем же id, его не находит.
+// Код привязан к регистрации клиента из снимка, по которому решён вход (а не
+// к той, что в таблице на момент записи): клиент, удалённый и созданный заново
+// с тем же id, его не находит.
 export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
   constructor(private readonly db: Db) {}
 
@@ -51,6 +53,7 @@ export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
     };
     // nonce optional: колонка nullable, null => поле опускаем (как in-memory).
     if (row.nonce !== null) record.nonce = row.nonce;
+    if (row.client_registration_id !== null) record.clientRegistrationId = row.client_registration_id;
     return record;
   }
 
@@ -59,8 +62,7 @@ export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
       `insert into authorization_codes
          (id, code_hash, client_id, user_id, redirect_uri, code_challenge, scope, nonce, auth,
           expires_at, consumed_at, client_registration_id, client_type)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-               (select registration_id from clients where id = $3), $12)`,
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         record.id,
         record.codeHash,
@@ -73,6 +75,7 @@ export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
         JSON.stringify(record.auth),
         record.expiresAt,
         record.consumedAt,
+        record.clientRegistrationId ?? null,
         record.clientType,
       ],
     );

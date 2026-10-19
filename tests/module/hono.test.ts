@@ -165,12 +165,12 @@ describe('createHonoAuth: защита', () => {
     expect(session).not.toContain('Max-Age=0');
   });
 
-  it('обновление не удалось на открытом пути -> аноним и стёртая cookie', async () => {
+  it('обновление не удалось на открытом пути -> аноним, cookie не стирается (T14)', async () => {
     const cookie = await sessionCookie(60 * 1000);
     const res = await buildApp(refreshFails).request(`${APP}/api/public`, { headers: { ...fetchMode, cookie } });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ user: null });
-    expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toContain('Max-Age=0');
+    expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toBeUndefined();
   });
 
   it('обработчик вернул голый Response -> обновлённая cookie всё равно дописана', async () => {

@@ -66,12 +66,12 @@ describe('refresh: временная ошибка сохраняет cookie и 
     expect(me.headers.getSetCookie()).toEqual([]);
     expect((await handlers.GET(req('/api/auth/me', await session(60_000)))).status).toBe(200);
   });
-  it('подтверждённый invalid_grant: /me без guard отвечает 401 и стирает cookie', async () => {
+  // Cookie не стираем: ответ мог опоздать и стереть сессию нового входа (T14).
+  it('подтверждённый invalid_grant: /me без guard отвечает 401 и не трогает cookie', async () => {
     const handlers = createAuthHandlers({ env, fetch: async () => Response.json({ error: 'invalid_grant' }, { status: 400 }) });
     const res = await handlers.GET(req('/api/auth/me', await session(-1)));
     expect(res.status).toBe(401);
-    expect(res.headers.getSetCookie().join()).toContain(`${SESSION_COOKIE}=;`);
-    expect(res.headers.getSetCookie().join()).toContain('Max-Age=0');
+    expect(res.headers.getSetCookie()).toEqual([]);
   });
   it('/me обновляет истёкший access, возвращает нового пользователя и пригодную cookie', async () => {
     const handlers = createAuthHandlers({ env, fetch: ok });
@@ -101,7 +101,7 @@ describe('refresh: временная ошибка сохраняет cookie и 
       const res = await app.request(req('/public', await session(-1)));
       const body = await res.json();
       expect(body.user?.name ?? null).toBe(revoked ? null : 'Обновлённый');
-      expect(res.headers.getSetCookie().join().includes('Max-Age=0')).toBe(revoked);
+      expect(res.headers.getSetCookie().length).toBe(revoked ? 0 : 1);
     }
   });
 });
@@ -163,7 +163,7 @@ describe('независимые flow и PKCE', () => {
       const res = await handlers.GET(req(`/api/auth/callback?code=${id}&state=${states[index]}`, jar.header()));
       expect(res.headers.get('location')).toBe(`${APP}/${id}`);
       const cleared = res.headers.getSetCookie().filter((c) => c.startsWith(`${FLOW_COOKIE}.`));
-      expect(cleared).toHaveLength(1); expect(cleared[0]).toContain(states[index]); jar.take(res);
+      expect(cleared).toHaveLength(1); expect(cleared[0]).toContain(states[index]!.split('~')[0]); jar.take(res);
     }
     expect(fetch).toHaveBeenCalledTimes(2);
     expect([...jar.values.keys()].filter((k) => k.startsWith(`${FLOW_COOKIE}.`))).toHaveLength(0);
@@ -173,18 +173,23 @@ describe('независимые flow и PKCE', () => {
     const fetch = vi.fn(ok); const handlers = createAuthHandlers({ env, fetch }); const jar = new Jar();
     const first = await handlers.GET(req('/api/auth/login?silent=1&next=/public')); jar.take(first);
     const state = new URL(first.headers.get('location')!).searchParams.get('state');
-    vi.setSystemTime(new Date('2026-10-01T00:10:01Z'));
+    vi.setSystemTime(new Date('2026-10-01T01:00:01Z')); // попытка живёт час
     const callback = await handlers.GET(req(`/api/auth/callback?code=x&state=${state}`, jar.header()));
     expect(callback.status).toBe(400); expect(fetch).not.toHaveBeenCalled();
     const next = await handlers.GET(req('/api/auth/login?silent=0', jar.header())); jar.take(next);
     expect(next.status).toBe(302);
     expect([...jar.values.keys()].filter((k) => k.startsWith(`${FLOW_COOKIE}.`))).toHaveLength(1);
   });
-  it('лимит активных flow не удаляет другие попытки', async () => {
+  it('сверх лимита активных flow вытесняется только одна, самая старая попытка', async () => {
     const handlers = createAuthHandlers({ env, fetch: ok }); const jar = new Jar();
     for (let i = 0; i < MAX_LOGIN_FLOWS; i++) jar.take(await handlers.GET(req('/api/auth/login?silent=0', jar.header())));
-    const before = jar.header(); const extra = await handlers.GET(req('/api/auth/login?silent=0', before));
-    expect(extra.status).toBe(429); expect(extra.headers.getSetCookie()).toEqual([]);
+    const oldest = [...jar.values.keys()][0]!;
+    const extra = await handlers.GET(req('/api/auth/login?silent=0', jar.header()));
+    expect(extra.status).toBe(302);
+    expect(extra.headers.getSetCookie().filter((c) => c.includes('Max-Age=0'))).toEqual([
+      `${oldest}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure`]);
+    jar.take(extra);
+    expect([...jar.values.keys()].filter((k) => k.startsWith(`${FLOW_COOKIE}.`))).toHaveLength(MAX_LOGIN_FLOWS);
     const key = [...jar.values.keys()][0]!;
     const state = key.slice(FLOW_COOKIE.length + 1);
     const done = await handlers.GET(req(`/api/auth/callback?code=x&state=${state}`, jar.header())); jar.take(done);

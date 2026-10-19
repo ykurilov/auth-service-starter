@@ -182,6 +182,13 @@ export class PgIdentityRepository implements IdentityRepository {
     return rows.map((r) => PgIdentityRepository.toEmail(r));
   }
 
+  async fillDisplayName(userId: string, name: string): Promise<void> {
+    await this.db.query('update users set display_name = $2 where id = $1 and display_name is null', [
+      userId,
+      name,
+    ]);
+  }
+
   async markEmailVerified(emailId: string): Promise<void> {
     await this.db.query('update email_addresses set verified = true where id = $1', [
       emailId,

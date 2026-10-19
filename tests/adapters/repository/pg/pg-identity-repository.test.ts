@@ -36,6 +36,14 @@ describe('PgIdentityRepository на pg-mem', () => {
     expect(found).toEqual(user);
   });
 
+  it('fillDisplayName заполняет только пустое имя', async () => {
+    const empty = await repo.createUser({});
+    await repo.fillDisplayName(empty.id, 'Иван');
+    expect((await repo.findUserById(empty.id))?.displayName).toBe('Иван');
+    await repo.fillDisplayName(empty.id, 'Пётр');
+    expect((await repo.findUserById(empty.id))?.displayName).toBe('Иван');
+  });
+
   it('findUserById неизвестного -> null', async () => {
     expect(await repo.findUserById('00000000-0000-0000-0000-000000000000')).toBeNull();
   });

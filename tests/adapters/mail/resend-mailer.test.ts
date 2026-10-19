@@ -98,11 +98,18 @@ describe('ResendMailer: таймаут отправки (R15)', () => {
     }
   });
 
-  it('ошибка провайдера тоже MailDeliveryError', async () => {
+  it('ошибка провайдера тоже MailDeliveryError, и это окончательный отказ (P3-7)', async () => {
     const { client } = fakeClient({ data: null, error: { message: 'boom', name: 'x' } });
     const mailer = new ResendMailer(client, 'noreply@example.com', logger);
-    await expect(mailer.send({ to: 'u@example.com', subject: 'Код', text: 'x' })).rejects.toBeInstanceOf(
-      MailDeliveryError,
-    );
+    const err = await mailer.send({ to: 'u@example.com', subject: 'Код', text: 'x' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MailDeliveryError);
+    expect((err as MailDeliveryError).outcome).toBe('rejected');
+  });
+
+  it('сбой запроса без ответа провайдера — исход неизвестен (P3-7)', async () => {
+    const client: ResendClientLike = { emails: { send: async () => { throw new Error('socket hang up'); } } };
+    const mailer = new ResendMailer(client, 'noreply@example.com', logger);
+    const err = await mailer.send({ to: 'u@example.com', subject: 'Код', text: 'x' }).catch((e: unknown) => e);
+    expect((err as MailDeliveryError).outcome).toBe('unconfirmed');
   });
 });

@@ -10,6 +10,10 @@ const params = (userId = 'user', clientType: ClientType = 'external') => ({
   userId, clientId: 'app', clientType, redirectUri: 'https://app.example/cb',
   codeChallenge: TEST_CHALLENGE, scope: 'openid', auth: { provider: 'email', emailVerified: true },
 });
+// Код по текущему снимку клиента app — как его выдаёт вход.
+const issueCode = async (deps: Awaited<ReturnType<typeof makeTestDeps>>, userId?: string, clientType?: ClientType) =>
+  deps.codes.issue({ ...params(userId, clientType),
+    clientRegistrationId: (await deps.clients.findClient('app'))?.registrationId });
 const codeBody = (code: string) => ({ grant_type: 'authorization_code', code,
   client_id: 'app', redirect_uri: 'https://app.example/cb', code_verifier: TEST_VERIFIER });
 
@@ -47,7 +51,7 @@ describe('token endpoint trusted principals and live client policy', () => {
     const app = buildServer(deps);
     try {
       for (let i = 0; i < 65; i++) {
-        const code = await deps.codes.issue(params(`u${i}`));
+        const code = await issueCode(deps, `u${i}`);
         const res = await app.inject({ method: 'POST', url: '/oauth/token', payload: codeBody(code) });
         expect(res.statusCode).toBe(200);
       }
@@ -66,7 +70,7 @@ describe('token endpoint trusted principals and live client policy', () => {
     };
     const app = buildServer(deps);
     try {
-      const code = await deps.codes.issue(params('user'));
+      const code = await issueCode(deps, 'user');
       const limited = await app.inject({ method: 'POST', url: '/oauth/token', payload: codeBody(code) });
       expect(limited.statusCode).toBe(429);
       expect(limited.headers['retry-after']).toBe('30');
@@ -95,7 +99,7 @@ describe('token endpoint trusted principals and live client policy', () => {
     const app = buildServer(deps);
     try {
       const client = (await deps.clients.findClient('app'))!;
-      const code = await deps.codes.issue(params());
+      const code = await issueCode(deps);
       const session = await deps.sessions.start(start('user'));
       const removed = await app.inject({ method: 'DELETE', url: '/admin/clients/app',
         headers: { authorization: 'Bearer test-admin' } });
@@ -114,7 +118,7 @@ describe('token endpoint trusted principals and live client policy', () => {
     const deps = await makeTestDeps();
     const app = buildServer(deps);
     try {
-      const code = await deps.codes.issue(params());
+      const code = await issueCode(deps);
       const session = await deps.sessions.start(start('user'));
       await deps.adminClients!.delete('app');
       expect((await app.inject({ method: 'POST', url: '/oauth/token', payload: codeBody(code) })).statusCode).toBe(400);
@@ -130,7 +134,7 @@ describe('token endpoint trusted principals and live client policy', () => {
       redirectUris: ['https://app.example/cb'], allowedProviders: ['email', 'google'] }] });
     const app = buildServer(deps);
     try {
-      const code = await deps.codes.issue(params('user', 'internal'));
+      const code = await issueCode(deps, 'user', 'internal');
       const email = await deps.sessions.start(start('user'));
       const google = await deps.sessions.start(start('user', 'app', 'google'));
       const patched = await app.inject({ method: 'PATCH', url: '/admin/clients/app',
@@ -162,7 +166,7 @@ describe('token endpoint trusted principals and live client policy', () => {
         const keptNext = await refresh(kept.refreshToken);
         expect(keptNext.statusCode).toBe(200);
 
-        const code = await deps.codes.issue(params('user', from));
+        const code = await issueCode(deps, 'user', from);
         expect((await patch({ type: to })).statusCode).toBe(200);
         expect((await app.inject({ method: 'POST', url: '/oauth/token', payload: codeBody(code) })).statusCode).toBe(400);
         expect((await refresh(keptNext.json().refresh_token)).statusCode).toBe(400);
@@ -174,7 +178,7 @@ describe('token endpoint trusted principals and live client policy', () => {
     const deps = await makeTestDeps();
     const app = buildServer(deps);
     try {
-      const code = await deps.codes.issue(params());
+      const code = await issueCode(deps);
       const session = await deps.sessions.start(start('user'));
       await deps.adminClients!.update('app', { allowedProviders: ['google'] });
       expect((await app.inject({ method: 'POST', url: '/oauth/token', payload: codeBody(code) })).statusCode).toBe(400);
@@ -182,7 +186,7 @@ describe('token endpoint trusted principals and live client policy', () => {
         grant_type: 'refresh_token', refresh_token: session.refreshToken,
       } })).statusCode).toBe(400);
       await deps.adminClients!.update('app', { allowedProviders: ['email'], redirectUris: ['https://app.example/new'] });
-      const oldRedirectCode = await deps.codes.issue(params());
+      const oldRedirectCode = await issueCode(deps);
       expect((await app.inject({ method: 'POST', url: '/oauth/token', payload: codeBody(oldRedirectCode) })).statusCode).toBe(400);
     } finally { await app.close(); }
   });

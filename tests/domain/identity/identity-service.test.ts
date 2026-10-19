@@ -206,3 +206,35 @@ describe('IdentityService.resolveLogin: адрес входа по состоя�
     expect(res.emailVerified).toBe(false);
   });
 });
+
+describe('T18: имя пользователя из одного источника', () => {
+  let repo: InMemoryIdentityRepository;
+  let service: IdentityService;
+  beforeEach(() => {
+    repo = new InMemoryIdentityRepository(fakeClock(new Date('2026-01-01T00:00:00.000Z')));
+    service = new IdentityService(repo);
+  });
+
+  it('аккаунт создан по почте без имени, затем вход через Google с именем → имя заполнено', async () => {
+    const first = await service.resolveLogin(pid({ profile: {} }));
+    expect(first.user.displayName).toBeUndefined();
+    const google = await service.resolveLogin(pid({ provider: 'google', subject: 'g-1', profile: { name: 'Иван Петров' } }));
+    expect(google.user.id).toBe(first.user.id);
+    expect(google.user.displayName).toBe('Иван Петров');
+    expect((await repo.findUserById(first.user.id))?.displayName).toBe('Иван Петров');
+  });
+
+  it('уже привязанный Google заполняет пустое имя при следующем входе', async () => {
+    const first = await service.resolveLogin(pid({ provider: 'google', subject: 'g-1', profile: {} }));
+    const again = await service.resolveLogin(pid({ provider: 'google', subject: 'g-1', profile: { name: 'Мария' } }));
+    expect(again.user.id).toBe(first.user.id);
+    expect(again.user.displayName).toBe('Мария');
+  });
+
+  it('заполненное имя не перезаписывается другим провайдером', async () => {
+    const first = await service.resolveLogin(pid({ provider: 'google', subject: 'g-1', profile: { name: 'Мария' } }));
+    const again = await service.resolveLogin(pid({ provider: 'google', subject: 'g-1', profile: { name: 'Mary' } }));
+    expect(again.user.displayName).toBe('Мария');
+    expect((await repo.findUserById(first.user.id))?.displayName).toBe('Мария');
+  });
+});

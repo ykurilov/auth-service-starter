@@ -141,6 +141,11 @@ export class InMemoryIdentityRepository implements IdentityRepository {
       .map((e) => InMemoryIdentityRepository.copy(e));
   }
 
+  async fillDisplayName(userId: string, name: string): Promise<void> {
+    const user = this.users.get(userId);
+    if (user && user.displayName === undefined) user.displayName = name;
+  }
+
   async markEmailVerified(emailId: string): Promise<void> {
     const email = this.emails.find((e) => e.id === emailId);
     if (email) email.verified = true;

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { HttpDeps } from '../../../src/adapters/http/deps.js';
 import type { Config } from '../../../src/config/config.js';
+import type { SsoStores } from '../../../src/domain/sso/sso-session.js';
 import type { Client } from '../../../src/domain/clients/client.js';
 import { fakeClock } from '../../helpers/fake-clock.js';
 import pino from 'pino';
@@ -18,7 +19,7 @@ import { InMemoryClientLock } from '../../../src/adapters/repository/in-memory-c
 import { InMemoryLoginChallengeStore } from '../../../src/adapters/repository/in-memory-login-challenge-store.js';
 import { InMemorySessionStore } from '../../../src/adapters/repository/in-memory-session-store.js';
 import { InMemoryRefreshTokenStore } from '../../../src/adapters/repository/in-memory-refresh-token-store.js';
-import { InMemorySsoSessionStore } from '../../../src/adapters/repository/in-memory-sso-session-store.js';
+import { InMemorySsoSessionStore, inMemorySsoStores } from '../../../src/adapters/repository/in-memory-sso-session-store.js';
 import { SsoSessionService } from '../../../src/domain/sso/sso-session-service.js';
 import { FakeMailer } from '../../../src/adapters/mail/fake-mailer.js';
 import { computeS256Challenge } from '../../../src/domain/login/pkce.js';
@@ -67,6 +68,8 @@ export interface TestDeps extends HttpDeps {
   mailer: FakeMailer;
   repo: InMemoryIdentityRepository;
   codeProvider: EmailCodeProvider;
+  // Хранилища SSO и сессий приложений (тест подменяет методы для сбоев).
+  ssoStores: SsoStores;
 }
 
 // handle попытки входа по коду из HTML экрана ввода кода (скрытое поле challenge).
@@ -112,6 +115,7 @@ export async function makeTestDeps(opts?: {
   const clock = fakeClock(new Date('2026-07-02T00:00:00Z'));
   const defaultRateLimits: RateLimits = {
     identifyPerIp: { limit: 60, windowSeconds: 900 },
+    googleNoncePerIp: { limit: 300, windowSeconds: 900 },
     codeRequest: { limit: 4, windowSeconds: 900 },
     codeRequestPerEmail: { limit: 8, windowSeconds: 3600 },
     codeRequestPerIp: { limit: 20, windowSeconds: 3600 },
@@ -154,8 +158,9 @@ export async function makeTestDeps(opts?: {
     idTtlSeconds: 900,
   });
   const refreshTokens = new InMemoryRefreshTokenStore();
+  const sessionStore = new InMemorySessionStore(refreshTokens);
   const sessions = new SessionService(
-    new InMemorySessionStore(refreshTokens),
+    sessionStore,
     refreshTokens,
     tokens,
     clock,
@@ -168,7 +173,9 @@ export async function makeTestDeps(opts?: {
     codeTtlMinutes: 15,
     generateCode: () => opts?.codeSequence?.shift() ?? opts?.fixedCode ?? 'CODE55',
   });
-  const sso = new SsoSessionService(new InMemorySsoSessionStore(), clock, {
+  const ssoSessionStore = new InMemorySsoSessionStore();
+  const ssoStores = inMemorySsoStores(ssoSessionStore, sessionStore);
+  const sso = new SsoSessionService(ssoStores, clock, {
     ssoTtlSeconds: config.ssoTtlSeconds,
   });
   const logger = pino({ level: 'silent' });
@@ -187,12 +194,13 @@ export async function makeTestDeps(opts?: {
     clients,
     // Тот же in-memory-реестр обслуживает и Admin API (он реализует ClientWriteStore).
     adminClients: clients,
-    clientLock: new InMemoryClientLock(clients, { codes, sessions },
+    clientLock: new InMemoryClientLock(clients, { codes, sessions, sso: ssoSessionStore },
       (clientId) => codeStore.invalidateForClient(clientId, clock.now())),
     rateLimiter: new InMemoryRateLimiter(clock),
     otpRateLimiter: new InMemoryRateLimiter(clock),
     mailer,
     repo,
+    ssoStores,
   };
 }
 

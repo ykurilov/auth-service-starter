@@ -130,3 +130,39 @@ describe('bootstrap на Postgres-хранилище (pg-mem)', () => {
     expect(refreshed.refresh_token).toBeTruthy();
   });
 });
+
+// T29: выключение дожидается идущей очистки и только потом закрывает базу.
+describe('bootstrap: фоновая очистка при выключении', () => {
+  it('shutdownGracefully ждёт прогон очистки, затем закрывает db; новых прогонов нет', async () => {
+    const { shutdownGracefully } = await import('../../src/index.js');
+    const inner = createMemDb();
+    const events: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let cleanupStarted!: () => void;
+    const started = new Promise<void>((r) => { cleanupStarted = r; });
+    let closed = false;
+    const db: Db = {
+      async query(sql, params) {
+        if (closed) events.push(`запрос после закрытия: ${sql.slice(0, 30)}`);
+        if (/^delete from authorization_codes/.test(sql)) { cleanupStarted(); await gate; }
+        return inner.query(sql, params);
+      },
+      withTransaction: (fn) => inner.withTransaction(fn),
+      withConnection: (fn) => inner.withConnection(fn),
+      async close() { closed = true; events.push('db закрыта'); await inner.close(); },
+    };
+    const booted = await bootstrap(
+      { PUBLIC_ISSUER_URL: 'https://auth.example', KEY_AUTOGENERATE: 'true', LOG_LEVEL: 'silent',
+        DATABASE_URL: 'postgres://mem', CLIENTS_JSON: JSON.stringify([CLIENT]) } as NodeJS.ProcessEnv,
+      { dbFactory: () => db },
+    );
+    await started;
+    const stopping = shutdownGracefully(booted.app, booted.db, booted.rateLimiter);
+    await new Promise((r) => setImmediate(r));
+    expect(events).toEqual([]);
+    release();
+    await stopping;
+    expect(events).toEqual(['db закрыта']);
+  });
+});

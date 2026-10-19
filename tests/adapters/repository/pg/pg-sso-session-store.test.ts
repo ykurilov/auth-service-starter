@@ -25,6 +25,7 @@ function makeSsoSession(overrides: Partial<SsoSession> = {}): SsoSession {
       name: 'Alice',
     },
     tokenHash: `hash-${randomUUID()}`,
+    chainId: randomUUID(),
     createdAt: now,
     lastUsedAt: now,
     expiresAt: new Date('2026-01-08T00:00:00.000Z'),
@@ -54,6 +55,23 @@ describe('PgSsoSessionStore на pg-mem', () => {
     const found = await store.findByHash(session.tokenHash);
     expect(found).toEqual(session);
     expect(found?.auth).toEqual(session.auth);
+  });
+
+  it('T12: findByLogin по auth.loginId; revokeChain гасит только живые сессии своей цепочки', async () => {
+    const chain = randomUUID();
+    const first = makeSsoSession({ chainId: chain, auth: { provider: 'email', loginId: 'login-1' } });
+    const earlier = new Date('2025-12-31T00:00:00.000Z');
+    const revokedBefore = makeSsoSession({ chainId: chain, revokedAt: earlier });
+    const other = makeSsoSession({ auth: { provider: 'email', loginId: 'login-2' } });
+    for (const s of [first, revokedBefore, other]) await store.save(s);
+    expect(await store.findByLogin('login-1')).toEqual(first);
+    expect(await store.findByLogin('nope')).toBeNull();
+
+    const at = new Date('2026-01-02T00:00:00.000Z');
+    await store.revokeChain(chain, at);
+    expect((await store.findByHash(first.tokenHash))?.revokedAt).toEqual(at);
+    expect((await store.findByHash(revokedBefore.tokenHash))?.revokedAt).toEqual(earlier);
+    expect((await store.findByHash(other.tokenHash))?.revokedAt).toBeNull();
   });
 
   it('findByHash неизвестного -> null', async () => {

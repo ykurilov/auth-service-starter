@@ -3,7 +3,7 @@ import type { ClientLock, ClientScope, ClientWriteScope } from '../../../domain/
 import { PgClientRegistry } from './pg-client-registry.js';
 
 // Сервисы, собранные поверх Db транзакции (хранилища пишут в неё же).
-export type ClientScopeServices = (tx: Db) => Pick<ClientScope, 'codes' | 'sessions'>;
+export type ClientScopeServices = (tx: Db) => Pick<ClientScope, 'codes' | 'sessions' | 'sso'>;
 
 // Блокировка клиента — блокировка его строки в clients: FOR SHARE у обменов
 // кода, FOR UPDATE у изменения и удаления. Всё, что делает fn, идёт в той же

@@ -15,6 +15,9 @@ import { IdentityService, EmailOwnershipRequiredError } from '../../../../src/do
 import { InvalidCredentialsError } from '../../../../src/domain/email-login/errors.js';
 import { FakeMailer } from '../../../../src/adapters/mail/fake-mailer.js';
 
+// Клиент, под которым начинается и проверяется попытка входа.
+const TEST_CLIENT = { id: 'app', registrationId: '00000000-0000-4000-8000-000000000001' };
+
 // Контракт Postgres-адаптеров попыток входа, nonce Google и лимитера на pg-mem.
 // «Несколько экземпляров» и «перезапуск» = независимые объекты сервисов поверх
 // одной БД: всё состояние в таблицах, ничего не держится в памяти процесса.
@@ -49,24 +52,24 @@ function codeInstance(mailer = new FakeMailer(), code = '424242') {
 describe('PgLoginChallengeStore через EmailCodeProvider', () => {
   it('попытка, начатая одним экземпляром, проверяется другим (и после перезапуска)', async () => {
     const a = codeInstance();
-    const { handle } = await a.provider.start({ email: 'u@x.com', binding: 'b' });
+    const { handle } = await a.provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
     const restarted = codeInstance();
-    const pid = await restarted.provider.verify({ handle, binding: 'b', code: '424242' });
+    const pid = await restarted.provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: '424242' });
     expect(pid.email).toBe('u@x.com');
     // Погашена для всех экземпляров.
-    await expect(a.provider.verify({ handle, binding: 'b', code: '424242' })).rejects.toBeInstanceOf(
+    await expect(a.provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: '424242' })).rejects.toBeInstanceOf(
       InvalidCredentialsError,
     );
   });
 
   it('лимит проверок общий для экземпляров: 5 неверных через разные экземпляры', async () => {
-    const { handle } = await codeInstance().provider.start({ email: 'u@x.com', binding: 'b' });
+    const { handle } = await codeInstance().provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
     for (let i = 0; i < 5; i++) {
-      await expect(codeInstance().provider.verify({ handle, binding: 'b', code: `0${i}` })).rejects.toBeInstanceOf(
+      await expect(codeInstance().provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: `0${i}` })).rejects.toBeInstanceOf(
         InvalidCredentialsError,
       );
     }
-    await expect(codeInstance().provider.verify({ handle, binding: 'b', code: '424242' })).rejects.toBeInstanceOf(
+    await expect(codeInstance().provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: '424242' })).rejects.toBeInstanceOf(
       InvalidCredentialsError,
     );
     const { rows } = await db.query<{ attempts: number }>('select attempts from email_login_challenges');
@@ -74,7 +77,7 @@ describe('PgLoginChallengeStore через EmailCodeProvider', () => {
   });
 
   it('в БД нет ни handle, ни кода в открытом виде; код солён handle', async () => {
-    const { handle } = await codeInstance().provider.start({ email: 'u@x.com', binding: 'b' });
+    const { handle } = await codeInstance().provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
     const { rows } = await db.query<Record<string, unknown>>('select * from email_login_challenges');
     const dump = JSON.stringify(rows);
     expect(dump).not.toContain(handle);
@@ -89,24 +92,24 @@ describe('PgLoginChallengeStore через EmailCodeProvider', () => {
       codeTtlMinutes: 15,
       generateCode: () => codes.shift()!,
     });
-    const { handle } = await provider.start({ email: 'u@x.com', binding: 'b' });
-    expect(await provider.resend({ handle, binding: 'b' })).toEqual({ email: 'u@x.com' });
-    await expect(provider.verify({ handle, binding: 'b', code: '111111' })).rejects.toBeInstanceOf(InvalidCredentialsError);
-    await provider.resend({ handle, binding: 'b' });
-    await provider.resend({ handle, binding: 'b' });
-    expect(await provider.resend({ handle, binding: 'b' })).toBeNull();
-    expect((await provider.verify({ handle, binding: 'b', code: '444444' })).email).toBe('u@x.com');
+    const { handle } = await provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
+    expect(await provider.resend({ handle, binding: 'b', client: TEST_CLIENT })).toEqual({ email: 'u@x.com' });
+    await expect(provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: '111111' })).rejects.toBeInstanceOf(InvalidCredentialsError);
+    await provider.resend({ handle, binding: 'b', client: TEST_CLIENT });
+    await provider.resend({ handle, binding: 'b', client: TEST_CLIENT });
+    expect(await provider.resend({ handle, binding: 'b', client: TEST_CLIENT })).toBeNull();
+    expect((await provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: '444444' })).email).toBe('u@x.com');
   });
 
   it('отложенная привязка сохраняется и возвращается', async () => {
     const { provider } = codeInstance();
     const link = { provider: 'google', subject: 'g-1', name: 'G' };
-    const { handle } = await provider.start({ email: 'u@corp.example', binding: 'b', link });
-    expect((await codeInstance().provider.verifyChallenge({ handle, binding: 'b', code: '424242' })).link).toEqual(link);
+    const { handle } = await provider.start({ email: 'u@corp.example', binding: 'b', client: TEST_CLIENT, link });
+    expect((await codeInstance().provider.verifyChallenge({ handle, binding: 'b', client: TEST_CLIENT, code: '424242' })).link).toEqual(link);
   });
 
   it('deleteExpired удаляет истёкшие попытки', async () => {
-    await codeInstance().provider.start({ email: 'u@x.com', binding: 'b' });
+    await codeInstance().provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
     expect(await new PgLoginChallengeStore(db).deleteExpired(new Date(clock.now().getTime() + 16 * 60_000))).toBe(1);
   });
 });

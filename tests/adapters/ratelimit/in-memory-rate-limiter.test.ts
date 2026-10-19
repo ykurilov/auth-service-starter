@@ -47,6 +47,16 @@ describe('InMemoryRateLimiter', () => {
     expect(fresh.remaining).toBe(2);
   });
 
+  it('refund возвращает одно списание в живом окне (P3-7)', async () => {
+    const clock = { now: () => new Date('2026-07-01T00:00:00Z') };
+    const limiter = new InMemoryRateLimiter(clock);
+    await limiter.hit('k', 1, 60);
+    await limiter.refund('k');
+    expect((await limiter.hit('k', 1, 60)).allowed).toBe(true);
+    expect((await limiter.hit('k', 1, 60)).allowed).toBe(false);
+    await limiter.close();
+  });
+
   it('разные ключи независимы', async () => {
     const clock = advanceableClock(new Date('2026-07-02T00:00:00Z'));
     const limiter = new InMemoryRateLimiter(clock);

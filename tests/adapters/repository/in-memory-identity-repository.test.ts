@@ -20,6 +20,14 @@ describe('InMemoryIdentityRepository', () => {
     expect(await repo.findUserById(user.id)).toEqual(user);
   });
 
+  it('fillDisplayName заполняет только пустое имя', async () => {
+    const empty = await repo.createUser({});
+    await repo.fillDisplayName(empty.id, 'Иван');
+    expect((await repo.findUserById(empty.id))?.displayName).toBe('Иван');
+    await repo.fillDisplayName(empty.id, 'Пётр');
+    expect((await repo.findUserById(empty.id))?.displayName).toBe('Иван');
+  });
+
   it('addIdentity + findIdentity — round-trip по (provider, subject)', async () => {
     const user = await repo.createUser({});
     await repo.addIdentity({ userId: user.id, provider: 'google', subject: 'g-1' });

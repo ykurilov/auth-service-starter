@@ -1,4 +1,4 @@
-import { confirmLogout, cookieNamesFor } from './helpers.js';
+import { confirmLogout, cookieNamesFor, nextOfState } from './helpers.js';
 import { describe, it, expect, vi } from 'vitest';
 import { createAuthHandlers } from '../../module/server/handlers.js';
 import { unseal } from '../../module/server/core/cookie-seal.js';
@@ -53,23 +53,20 @@ describe('GET /api/auth/login', () => {
     expect(challenge).toBeTruthy();
 
     const flowCookie = setCookies(res).find((c) => c.startsWith(`${FLOW_COOKIE}.`))!;
-    expect(flowCookie).toContain('Max-Age=600'); // 10 минут
+    expect(flowCookie).toContain('Max-Age=3600'); // час: код из письма с продлениями
     // flowCookie найдена через find(startsWith(FLOW_COOKIE=)) — сегмент и ключ гарантированы.
     const sealed = Object.values(parseCookies(flowCookie.split(';')[0]!))[0]!;
-    const flow = await unseal<{ verifier: string; state: string; next: string }>(sealed, SECRET);
-    expect(flow!.state).toBe(state);
-    expect(flow!.next).toBe('/dashboard');
+    const flow = await unseal<{ verifier: string; state: string }>(sealed, SECRET);
+    expect(flow!.state.split('~')[0]).toBe(state!.split('~')[0]);
+    expect(await nextOfState(state, SECRET)).toBe('/dashboard');
     expect(flow!.verifier).toBeTruthy();
   });
 
   it('внешний/абсолютный next отбрасывается (только относительный путь)', async () => {
     const { GET } = handlersWith(() => new Response(''));
     const res = await GET(new Request('https://app.test/api/auth/login?next=https://evil.com'));
-    const flowCookie = setCookies(res).find((c) => c.startsWith(`${FLOW_COOKIE}.`))!;
-    // flowCookie найдена через find(startsWith(FLOW_COOKIE=)) — сегмент и ключ гарантированы.
-    const sealed = Object.values(parseCookies(flowCookie.split(';')[0]!))[0]!;
-    const flow = await unseal<{ next: string }>(sealed, SECRET);
-    expect(flow!.next).toBe('/');
+    const state = new URL(res.headers.get('location')!).searchParams.get('state');
+    expect(await nextOfState(state, SECRET)).toBe('/');
   });
 });
 
@@ -221,7 +218,9 @@ describe('тихий вход (prompt=none)', () => {
           SECRET,
         )
       : null;
-    return { res, location, cookieHeader, flow, state: location.searchParams.get('state') };
+    const state = location.searchParams.get('state');
+    if (flow) flow.next = (await nextOfState(state, SECRET))!;
+    return { res, location, cookieHeader, flow, state };
   }
 
   async function callback(query: string, cookie: string, handler = tokenOk) {
@@ -237,7 +236,7 @@ describe('тихий вход (prompt=none)', () => {
     expect(location.origin + location.pathname).toBe('https://auth.test/authorize');
     expect(location.searchParams.get('prompt')).toBe('none');
     expect(location.searchParams.get('code_challenge')).toBeTruthy();
-    expect(flow!.state).toBe(state);
+    expect(flow!.state.split('~')[0]).toBe(state!.split('~')[0]);
     expect(flow!.next).toBe('/dashboard');
     expect(flow!.silent).toBe('then-interactive');
   });
@@ -266,10 +265,10 @@ describe('тихий вход (prompt=none)', () => {
     expect(flow!.silent).toBeUndefined();
   });
 
-  it('метка «тихая проверка сделана» -> login сразу интерактивный', async () => {
+  it('метка «тихая проверка сделана» не отменяет тихий шаг явного входа (T15)', async () => {
     const { location, flow } = await startLogin('?next=/dashboard', MARK);
-    expect(location.searchParams.has('prompt')).toBe(false);
-    expect(flow!.silent).toBeUndefined();
+    expect(location.searchParams.get('prompt')).toBe('none');
+    expect(flow!.silent).toBe('then-interactive');
   });
 
   it('login?silent=1 — только тихая проверка', async () => {
@@ -311,8 +310,8 @@ describe('тихий вход (prompt=none)', () => {
         Object.values(parseCookies(flowCookie.split(';')[0]!))[0]!,
         SECRET,
       );
-      expect(flow!.state).toBe(loc.searchParams.get('state'));
-      expect(flow!.next).toBe('/dashboard');
+      expect(flow!.state.split('~')[0]).toBe(loc.searchParams.get('state')!.split('~')[0]);
+      expect(await nextOfState(loc.searchParams.get('state'), SECRET)).toBe('/dashboard');
       expect(flow!.silent).toBeUndefined();
       expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toBeUndefined();
     },
@@ -350,7 +349,8 @@ describe('тихий вход (prompt=none)', () => {
     const res = await callback(`?error=access_denied&state=${state}`, cookieHeader!);
     const html = await res.text();
     expect(html).toContain('Попробовать снова');
-    expect(html).toContain(`href="/api/auth/login?silent=0&amp;next=${encodeURIComponent('/d?a=1&b="x"')}"`);
+    // next нормализован: кавычки в query закодированы.
+    expect(html).toContain(`href="/api/auth/login?silent=0&amp;next=${encodeURIComponent('/d?a=1&b=%22x%22')}"`);
     expect(html).not.toContain('"x"');
   });
 

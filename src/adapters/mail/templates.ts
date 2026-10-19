@@ -125,23 +125,18 @@ export function buildLoginCodeEmail(opts: LoginCodeEmailOptions): OutgoingEmail 
     footer: `Письмо отправлено автоматически сервисом авторизации ${opts.appName}. Отвечать на него не нужно.`,
   });
 
-  return { to: opts.to, subject, html, text };
-}
-
-export interface GoogleLinkCodeEmailOptions extends LoginCodeEmailOptions {
-  // Имя из Google-аккаунта, который привязывают (если Google его прислал).
-  googleName?: string;
+  return { to: opts.to, subject, html, text, kind: 'login_code' };
 }
 
 // Код для привязки Google-аккаунта со сторонним адресом. Отличается от кода
 // входа: верный код навсегда даёт этому Google-аккаунту вход в аккаунт
 // владельца почты, поэтому письмо прямо говорит, что подтверждает код, и
-// предупреждает не сообщать его никому.
-export function buildGoogleLinkCodeEmail(opts: GoogleLinkCodeEmailOptions): OutgoingEmail {
+// предупреждает не сообщать его никому. Имя Google-аккаунта в письмо не
+// вставляем: его задаёт тот, кто входит, и оно стало бы текстом для фишинга.
+export function buildGoogleLinkCodeEmail(opts: LoginCodeEmailOptions): OutgoingEmail {
   const subject = `${opts.code} — код для привязки Google-аккаунта к «${opts.appName}»`;
-  const account = opts.googleName ? `Google-аккаунт «${opts.googleName}»` : 'Google-аккаунт';
   const intro =
-    `Кто-то входит в ${opts.appName} через ${account} и указал этот адрес почты. ` +
+    `Кто-то входит в ${opts.appName} через Google-аккаунт и указал этот адрес почты. ` +
     'Код подтверждает, что этот Google-аккаунт ваш и его можно привязать к вашему аккаунту.';
   const consequence =
     'После привязки этот Google-аккаунт будет входить в ваш аккаунт без кода из письма.';
@@ -166,5 +161,5 @@ export function buildGoogleLinkCodeEmail(opts: GoogleLinkCodeEmailOptions): Outg
     outro,
     footer,
   });
-  return { to: opts.to, subject, html, text };
+  return { to: opts.to, subject, html, text, kind: 'google_link_code' };
 }

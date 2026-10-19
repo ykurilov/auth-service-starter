@@ -42,7 +42,7 @@ describe('PgClientRegistry на pg-mem', () => {
     await registry.create(client);
 
     const found = await registry.findClient('app-1');
-    expect(found).toEqual(client);
+    expect(found).toEqual({ ...client, registrationId: expect.any(String) });
     expect(Array.isArray(found?.redirectUris)).toBe(true);
     expect(found?.allowedProviders).toEqual(['email', 'google']);
     expect(found?.postLogoutRedirectUris).toEqual(['https://app.example/logout']);

@@ -12,6 +12,9 @@ import { computeS256Challenge } from '../../src/domain/login/pkce.js';
 import type { Client } from '../../src/domain/clients/client.js';
 import { fakeClock } from '../helpers/fake-clock.js';
 
+// Клиент, под которым начинается и проверяется попытка входа.
+const TEST_CLIENT = { id: 'app', registrationId: '00000000-0000-4000-8000-000000000001' };
+
 const T0 = new Date('2026-07-01T00:00:00Z');
 const VERIFIER = 'integration-verifier-1234567890-достаточно-длинный';
 const CHALLENGE = computeS256Challenge(VERIFIER);
@@ -49,10 +52,10 @@ describe('интеграция: сквозной вход по email-коду', 
 
     const validated = await login.validateRequest(req);
 
-    const started = await codeProvider.start({ email: 'user@x.com', binding: 'b' });
+    const started = await codeProvider.start({ email: 'user@x.com', binding: 'b', client: TEST_CLIENT });
     expect(mailer.last?.text).toContain('CODE99');
 
-    const pid = await codeProvider.verify({ handle: started.handle, binding: 'b', code: 'CODE99' });
+    const pid = await codeProvider.verify({ handle: started.handle, binding: 'b', client: TEST_CLIENT, code: 'CODE99' });
     expect(pid.emailVerified).toBe(true);
 
     const { code: authCode } = await login.completeLogin(validated, pid);
@@ -67,8 +70,8 @@ describe('интеграция: сквозной вход по email-коду', 
     expect(grant.nonce).toBe('nonce-1');
     expect(grant.scope).toBe('openid');
 
-    const started2 = await codeProvider.start({ email: 'user@x.com', binding: 'b' });
-    const pid2 = await codeProvider.verify({ handle: started2.handle, binding: 'b', code: 'CODE99' });
+    const started2 = await codeProvider.start({ email: 'user@x.com', binding: 'b', client: TEST_CLIENT });
+    const pid2 = await codeProvider.verify({ handle: started2.handle, binding: 'b', client: TEST_CLIENT, code: 'CODE99' });
     const again = await identity.resolveLogin(pid2);
     expect(again.user.id).toBe(grant.userId);
     expect(again.createdUser).toBe(false);

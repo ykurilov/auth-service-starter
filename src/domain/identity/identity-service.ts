@@ -66,7 +66,8 @@ export class IdentityService {
         );
       }
       await this.attachEmail(repo, user, pid, email);
-      return { user, createdUser: false, linkedIdentity: false, ...(await this.loginEmailOf(repo, user, email)) };
+      const named = await this.fillName(repo, user, pid);
+      return { user: named, createdUser: false, linkedIdentity: false, ...(await this.loginEmailOf(repo, user, email)) };
     }
 
     // 2. Первый вход этой личности. Адрес без доказанного владения не даёт
@@ -79,7 +80,18 @@ export class IdentityService {
 
     await repo.addIdentity({ userId: user.id, provider: pid.provider, subject: pid.subject });
     await this.attachEmail(repo, user, pid, email);
-    return { user, createdUser, linkedIdentity: !createdUser, ...(await this.loginEmailOf(repo, user, email)) };
+    const named = await this.fillName(repo, user, pid);
+    return { user: named, createdUser, linkedIdentity: !createdUser, ...(await this.loginEmailOf(repo, user, email)) };
+  }
+
+  // Имя пользователя — одно, в базе: его отдают и id_token, и /userinfo.
+  // Провайдер с именем (Google) заполняет пустое имя аккаунта, заведённого
+  // по почте, но не перезаписывает уже заданное.
+  private async fillName(repo: IdentityRepository, user: User, pid: ProviderIdentity): Promise<User> {
+    const name = pid.profile.name;
+    if (user.displayName !== undefined || !name) return user;
+    await repo.fillDisplayName(user.id, name);
+    return (await repo.findUserById(user.id)) ?? user;
   }
 
   // Какой адрес отдать приложению после входа. Адрес этого входа — если он

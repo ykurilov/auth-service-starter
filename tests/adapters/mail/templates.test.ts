@@ -53,31 +53,35 @@ describe('buildLoginCodeEmail', () => {
 });
 
 describe('buildGoogleLinkCodeEmail (R20)', () => {
-  const opts = { to: 'boss@corp.example', code: '123456', ttlMinutes: 15, appName: 'Auth Service', googleName: 'Иван <script>' };
+  const opts = { to: 'boss@corp.example', code: '123456', ttlMinutes: 15, appName: 'Auth Service & <Co>' };
 
   it('тема и текст говорят о привязке Google-аккаунта, а не об обычном входе', () => {
     const email = buildGoogleLinkCodeEmail(opts);
-    expect(email.subject).toBe('123456 — код для привязки Google-аккаунта к «Auth Service»');
+    expect(email.subject).toBe('123456 — код для привязки Google-аккаунта к «Auth Service & <Co>»');
     expect(email.subject).not.toBe(buildLoginCodeEmail(opts).subject);
     expect(email.text).toContain('привяз');
-    expect(email.text).toContain('Google');
-    expect(email.text).toContain('Иван <script>');
+    expect(email.text).toContain('Google-аккаунт');
     expect(email.text).toContain('без кода');
     expect(email.text).toContain('Никому не сообщайте');
     expect(email.text).toContain('123456');
+    expect(email.text).not.toContain('undefined');
   });
 
-  it('html содержит код и экранирует имя из Google', () => {
+  it('html содержит код и экранирует название приложения', () => {
     const email = buildGoogleLinkCodeEmail(opts);
     expect(email.html).toContain('123456');
-    expect(email.html).toContain('Иван &lt;script&gt;');
-    expect(email.html).not.toContain('<script>');
+    expect(email.html).toContain('Auth Service &amp; &lt;Co&gt;');
+    expect(email.html).not.toContain('<Co>');
   });
 
-  it('без имени в Google письмо тоже понятное', () => {
-    const { googleName: _, ...rest } = opts;
-    const email = buildGoogleLinkCodeEmail(rest);
-    expect(email.text).toContain('Google-аккаунт');
-    expect(email.text).not.toContain('undefined');
+  it('T22: имя Google-аккаунта в письмо не вставляется — его задаёт тот, кто входит', () => {
+    const email = buildGoogleLinkCodeEmail({ ...opts, googleName: 'Служба безопасности' } as typeof opts);
+    expect(email.text).not.toContain('Служба безопасности');
+    expect(email.html).not.toContain('Служба безопасности');
+  });
+
+  it('тип письма помечен для журнала', () => {
+    expect(buildGoogleLinkCodeEmail(opts).kind).toBe('google_link_code');
+    expect(buildLoginCodeEmail(opts).kind).toBe('login_code');
   });
 });

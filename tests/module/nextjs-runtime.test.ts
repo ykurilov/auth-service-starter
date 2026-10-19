@@ -70,8 +70,9 @@ describe.skipIf(!runtime)('настоящие NextRequest/NextResponse, request 
         }));
       expect(html).toBe(outcome === 'refresh' ? '<div>Новый</div>' : '<div>anonymous</div>');
       const set = res.headers.getSetCookie();
-      if (outcome === 'temporary-expired') expect(set).toEqual([]);
-      else expect(set.join().includes('Max-Age=0')).toBe(outcome === 'revoked');
+      // Отказ refresh cookie не стирает: ответ мог опоздать и стереть сессию нового входа.
+      if (outcome === 'refresh') expect(set.join()).toContain(`${SESSION_COOKIE}=v2.`);
+      else expect(set).toEqual([]);
     });
   }
 });

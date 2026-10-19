@@ -1,6 +1,7 @@
 import { Resend } from 'resend';
 import type { Logger } from 'pino';
 import { MailDeliveryError, type Mailer, type OutgoingEmail } from '../../ports/mailer.js';
+import { emailLogFields } from './email-log-fields.js';
 
 // Минимальный интерфейс того, что нам нужно от resend-клиента — позволяет
 // подменить его в тестах фейком без реальной сети.
@@ -23,10 +24,12 @@ export interface ResendClientLike {
 // дольше — уже не «медленно», а «сломалось».
 export const RESEND_TIMEOUT_MS = 10_000;
 
-// Боевой адаптер Mailer поверх Resend. Логирует только факт отправки и (при
-// провале) причину ошибки — тело письма (в нём код входа) НЕ логируется.
-// Любой провал (ошибка провайдера или нет ответа за RESEND_TIMEOUT_MS) —
-// MailDeliveryError. Таймер страхует и клиента, который не слушает signal.
+// Боевой адаптер Mailer поверх Resend. Журнал получает только id письма у
+// провайдера, тип письма и хеш адреса; при провале — ещё причину ошибки. Тема
+// и тело (в них код входа) и открытый адрес в журнал не попадают.
+// Любой провал — MailDeliveryError: ответ с ошибкой — окончательный отказ
+// (rejected), нет ответа за RESEND_TIMEOUT_MS или обрыв запроса — исход
+// неизвестен (unconfirmed). Таймер страхует и клиента, который не слушает signal.
 export class ResendMailer implements Mailer {
   constructor(
     private readonly client: ResendClientLike,
@@ -54,21 +57,20 @@ export class ResendMailer implements Mailer {
         timedOut,
       ]);
     } catch (err) {
-      this.logger.error({ provider: 'resend', err }, 'ошибка отправки письма');
+      this.logger.error({ provider: 'resend', ...emailLogFields(email), err }, 'ошибка отправки письма');
       throw err instanceof MailDeliveryError ? err : new MailDeliveryError('сбой запроса к Resend');
     } finally {
       clearTimeout(timer);
     }
     if (result.error) {
-      // Тело письма (код) НЕ логируем — только факт и причину ошибки.
       this.logger.error(
-        { provider: 'resend', error: result.error.message, name: result.error.name },
+        { provider: 'resend', ...emailLogFields(email), error: result.error.message, name: result.error.name },
         'ошибка отправки письма',
       );
-      throw new MailDeliveryError(`Resend send failed: ${result.error.message}`);
+      throw new MailDeliveryError(`Resend send failed: ${result.error.message}`, 'rejected');
     }
     this.logger.info(
-      { provider: 'resend', to: email.to, subject: email.subject, emailId: result.data?.id },
+      { provider: 'resend', emailId: result.data?.id, ...emailLogFields(email) },
       'письмо отправлено (resend)',
     );
   }

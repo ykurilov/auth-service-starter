@@ -40,6 +40,9 @@ const pem = z
 const schema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3016),
   TOKEN_RATE_LIMIT: z.coerce.number().int().positive().default(10000),
+  // Писем с кодом с одного IP за час (новые попытки и переотправки на все
+  // адреса). Класс или офис за одним адресом делят этот бюджет.
+  CODE_REQUEST_PER_IP_HOURLY: z.coerce.number().int().positive().default(100),
   // Хвостовой слэш срезаем: адреса discovery строятся конкатенацией
   // `${issuer}/authorize`, и слэш в .env дал бы двойной слэш во всех путях.
   PUBLIC_ISSUER_URL: z
@@ -131,6 +134,7 @@ export interface RateLimitRule {
 
 export interface RateLimits {
   identifyPerIp: RateLimitRule;
+  googleNoncePerIp: RateLimitRule;
   codeRequest: RateLimitRule;
   codeRequestPerIp: RateLimitRule;
   codeRequestPerEmail: RateLimitRule;
@@ -200,15 +204,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     rateLimits: {
       // Лимит POST /authorize/google по IP: просторный для общих IP (офис, кафе).
       identifyPerIp: { limit: 60, windowSeconds: 900 },
-      // Отправка кода (счётчики в Postgres, общие для экземпляров):
-      // по (ip+email) — против одного источника; по ip — общий бюджет одного
-      // источника на все адреса; по email за час и за сутки — бюджет аккаунта
-      // против ротации IP. Каждая отправка — новая попытка не более чем с 5
-      // проверками, так что на один адрес за сутки — не больше 20×5 догадок.
-      // По (ip+email) за 15 минут: первая отправка и 3 повторные в попытке.
-      codeRequest: { limit: 4, windowSeconds: 900 },
-      codeRequestPerIp: { limit: 20, windowSeconds: 3600 },
-      codeRequestPerEmail: { limit: 5, windowSeconds: 3600 },
+      // Выпуск Google nonce при показе страницы входа (в т.ч. страниц ошибок):
+      // отдельный счётчик, чтобы просмотры страниц не тратили бюджет входа.
+      googleNoncePerIp: { limit: 300, windowSeconds: 900 },
+      // Отправка кода (счётчики в Postgres, общие для экземпляров).
+      // По ip — общий бюджет писем одного источника на все адреса: новые
+      // попытки и переотправки (настраивается CODE_REQUEST_PER_IP_HOURLY).
+      // Остальные три считают только НОВЫЕ попытки входа: переотправка в живой
+      // попытке ограничена самой попыткой (3 раза), и посторонний, исчерпавший
+      // лимит адреса, не мешает владельцу дослать код в уже начатый вход.
+      // По (ip+email) — против одного источника; по email за час и за сутки —
+      // бюджет адреса против ротации IP. Каждая попытка — не больше 4 писем и
+      // 5 проверок: на один адрес за сутки не больше 20×4 писем и 20×5 догадок.
+      codeRequest: { limit: 5, windowSeconds: 900 },
+      codeRequestPerIp: { limit: p.CODE_REQUEST_PER_IP_HOURLY, windowSeconds: 3600 },
+      codeRequestPerEmail: { limit: 10, windowSeconds: 3600 },
       codeRequestPerEmailDaily: { limit: 20, windowSeconds: 86400 },
       // Проверка кода: общий бюджет одного IP на все попытки и адреса. Лимит
       // по адресу намеренно не вводим: им посторонний заблокировал бы владельца

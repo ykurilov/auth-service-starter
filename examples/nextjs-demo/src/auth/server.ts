@@ -1,7 +1,7 @@
 import { loadAppIdentity, loadModuleConfig, type LoadConfigOptions } from './core/config.js';
-import { unseal } from './core/cookie-seal.js';
+import { readSession } from './core/session-cookie.js';
 import { parseCookies, SILENT_CHECK_PARAM, authCookieNames } from './cookies.js';
-import { isSessionData, type SessionUser } from './core/session-data.js';
+import type { SessionUser } from './core/session-data.js';
 
 // Для серверных компонентов: только читаем cookie (middleware держит её свежей).
 // Ставить cookie в серверных компонентах Next.js нельзя — поэтому здесь без refresh.
@@ -11,10 +11,8 @@ export async function getUser(
 ): Promise<SessionUser | null> {
   const config = loadModuleConfig(options);
   const cookies = parseCookies(cookieHeader);
-  const sealed = cookies[authCookieNames(config.clientId, config.appUrl).session];
-  if (!sealed) return null;
-  const data = await unseal(sealed, config.cookieSecret);
-  return isSessionData(data) && data.accessTokenExpiresAt > Date.now() ? data.user : null;
+  const data = await readSession(cookies[authCookieNames(config.clientId, config.appUrl).session], config.cookieSecret);
+  return data && data.accessTokenExpiresAt > Date.now() ? data.user : null;
 }
 
 // Для публичных страниц: тихая проверка SSO уже была и не нашла сессию.

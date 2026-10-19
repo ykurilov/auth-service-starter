@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Client, ClientRegistry } from '../clients/client.js';
 import type { IdentityService } from '../identity/identity-service.js';
 import type { ProviderIdentity } from '../identity/provider-identity.js';
@@ -65,12 +66,16 @@ export class LoginService {
       provider: providerIdentity.provider,
       email,
       emailVerified,
-      name: providerIdentity.profile.name,
+      // Имя — из базы, как в /userinfo, а не из ответа провайдера.
+      name: user.displayName,
+      loginId: randomUUID(),
     };
     const code = await this.codes.issue({
       clientId: validated.client.id,
-      // Тип, по которому решено, нужно ли согласие: обмен сверит его с текущим.
+      // Тип, по которому решено, нужно ли согласие, и регистрация из того же
+      // снимка: обмен сверит их с текущими.
       clientType: validated.client.type,
+      clientRegistrationId: validated.client.registrationId,
       userId: user.id,
       redirectUri: validated.request.redirectUri,
       codeChallenge: validated.request.codeChallenge,
@@ -93,8 +98,10 @@ export class LoginService {
     }
     return this.codes.issue({
       clientId: validated.client.id,
-      // Тип, по которому решено, нужно ли согласие: обмен сверит его с текущим.
+      // Тип, по которому решено, нужно ли согласие, и регистрация из того же
+      // снимка: обмен сверит их с текущими.
       clientType: validated.client.type,
+      clientRegistrationId: validated.client.registrationId,
       userId,
       redirectUri: validated.request.redirectUri,
       codeChallenge: validated.request.codeChallenge,

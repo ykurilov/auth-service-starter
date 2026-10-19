@@ -342,7 +342,7 @@ describe('R11: бюджеты отправки и исчерпанная поп�
 });
 
 describe('R15: письмо не ушло', () => {
-  it('сбой отправки при запросе кода → 503 с понятной страницей', async () => {
+  it('сбой отправки при запросе кода → 503, экран кода с попыткой (T21)', async () => {
     const deps = await makeTestDeps();
     deps.mailer.send = async () => { throw new MailDeliveryError('timeout'); };
     const app = buildServer(deps);
@@ -353,8 +353,8 @@ describe('R15: письмо не ушло', () => {
       headers: FORM_HEADERS,
     });
     expect(res.statusCode).toBe(503);
-    expect(res.body).toContain('Не удалось отправить письмо');
-    expect(res.body).toContain('name="email"');
+    expect(res.body).toContain('Не удалось подтвердить отправку письма');
+    expect(res.body).toContain('name="code"');
     await app.close();
   });
 

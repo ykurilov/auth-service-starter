@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createAuthHandlers } from '../../module/server/handlers.js';
-import { seal, unseal } from '../../module/server/core/cookie-seal.js';
-import { SILENT_CHECK_PARAM, FLOW_MAX_AGE } from '../../module/server/cookies.js';
-import { cookieNamesFor } from './helpers.js';
+import { seal } from '../../module/server/core/cookie-seal.js';
+import { cookieNamesFor, nextOfState } from './helpers.js';
 
 const APP = 'https://app.test';
 const SECRET = 'test-only-cookie-secret-at-least-32-characters';
@@ -40,24 +39,19 @@ describe('R17: сбой своего обычного входа', () => {
   });
 });
 
+// Сверх лимита новая попытка вытесняет самую старую: попытка живёт час, и
+// брошенные вкладки не должны блокировать вход (T13).
 describe('R18: лимит незавершённых входов', () => {
-  it('silent=1 сверх лимита тихо возвращает на next с меткой, без 429', async () => {
-    const flows = await openFlows(4);
-    const res = await createAuthHandlers({ env }).GET(req('/api/auth/login?silent=1&next=/blog', [...flows, staleFlow].join('; ')));
-    expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe(`${APP}/blog?${SILENT_CHECK_PARAM}=1`);
-    const set = res.headers.getSetCookie();
-    expect(set.some((c) => c.startsWith(`${names.silentCheck}=1`))).toBe(true);
-    expect(flowLines(res)).toEqual([]);
-    expect(set).toContain(`${staleFlow.split('=')[0]}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure`);
-  });
+  const clearOf = (cookie: string) => `${cookie.split('=')[0]}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure`;
 
-  it('обычный вход сверх лимита — 429, но протухшие попытки всё равно очищаются', async () => {
+  it.each(['silent=1&next=/blog', 'silent=0&next=/'])('%s сверх лимита стартует, вытесняя самую старую и протухшие', async (query) => {
     const flows = await openFlows(4);
-    const res = await createAuthHandlers({ env }).GET(req('/api/auth/login?silent=0&next=/', [...flows, staleFlow].join('; ')));
-    expect(res.status).toBe(429);
-    expect(res.headers.get('retry-after')).toBe(String(FLOW_MAX_AGE));
-    expect(res.headers.getSetCookie()).toEqual([`${staleFlow.split('=')[0]}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure`]);
+    const res = await createAuthHandlers({ env }).GET(req(`/api/auth/login?${query}`, [...flows, staleFlow].join('; ')));
+    expect(res.status).toBe(302);
+    expect(new URL(res.headers.get('location')!).origin).toBe('https://auth.test');
+    expect(flowLines(res)).toHaveLength(1);
+    expect(res.headers.getSetCookie().filter((c) => c.includes('Max-Age=0')).sort())
+      .toEqual([clearOf(staleFlow), clearOf(flows[0]!)].sort());
   });
 
   it('silent=1 с меткой тоже очищает протухшие попытки', async () => {
@@ -71,7 +65,8 @@ describe('R18: длинный next', () => {
   async function flowOf(query: string) {
     const res = await createAuthHandlers({ env }).GET(req(`/api/auth/login?${query}`));
     const line = pair(flowLines(res)[0]!);
-    return { line, flow: await unseal<{ next: string }>(line.slice(line.indexOf('=') + 1), SECRET) };
+    const next = await nextOfState(new URL(res.headers.get('location')!).searchParams.get('state'), SECRET);
+    return { line, flow: { next } };
   }
 
   it('next из 1023 кавычек не раздувает flow-cookie выше лимита браузера', async () => {

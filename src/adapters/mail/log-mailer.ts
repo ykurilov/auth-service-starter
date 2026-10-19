@@ -1,13 +1,13 @@
 import type { Logger } from 'pino';
 import type { Mailer, OutgoingEmail } from '../../ports/mailer.js';
+import { emailLogFields } from './email-log-fields.js';
 
-// Реальный (не тестовый) адаптер Mailer. Логирует только факт отправки:
-// адрес и тему. Тело письма (в нём код входа) НЕ логируется — секрет не
-// должен утекать в логи.
+// Адаптер Mailer без почтового провайдера: письмо никуда не уходит. Журнал
+// получает только безопасные поля — ни адреса, ни темы (в ней код), ни тела.
 export class LogMailer implements Mailer {
   constructor(private readonly logger: Logger) {}
 
   async send(email: OutgoingEmail): Promise<void> {
-    this.logger.info({ to: email.to, subject: email.subject }, 'письмо отправлено (log-mailer)');
+    this.logger.info(emailLogFields(email), 'письмо не отправлено: почта не настроена (log-mailer)');
   }
 }

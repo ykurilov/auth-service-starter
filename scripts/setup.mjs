@@ -28,7 +28,7 @@ try {
   const local = issuer.protocol === 'http:';
   const clients = values.app ? [{ base: origin(values.app, 'app') }].map(({ base }) => ({
     id: base.hostname, type: 'internal', redirectUris: [base.origin + '/api/auth/callback'],
-    postLogoutRedirectUris: [base.origin + '/'], allowedProviders: ['email'],
+    postLogoutRedirectUris: [base.origin + '/'], allowedProviders: ['email', 'google'],
   })) : [];
   const content = [
     '# Создано setup. Секреты уникальны для этой установки; файл не коммитится.',

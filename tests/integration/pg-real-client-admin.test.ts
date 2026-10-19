@@ -12,6 +12,10 @@ import { PgAuthorizationCodeStore } from '../../src/adapters/repository/pg/pg-au
 import { PgSessionStore } from '../../src/adapters/repository/pg/pg-session-store.js';
 import { PgRefreshTokenStore } from '../../src/adapters/repository/pg/pg-refresh-token-store.js';
 import { PgClientLock } from '../../src/adapters/repository/pg/pg-client-lock.js';
+import { PgSsoSessionStore, pgSsoStores } from '../../src/adapters/repository/pg/pg-sso-session-store.js';
+import { SsoSessionService } from '../../src/domain/sso/sso-session-service.js';
+import { PgLoginChallengeStore } from '../../src/adapters/repository/pg/pg-login-challenge-store.js';
+import { EmailCodeProvider } from '../../src/domain/email-login/email-code-provider.js';
 import { AuthorizationCodeService } from '../../src/domain/login/authorization-code-service.js';
 import { SessionService } from '../../src/domain/sessions/session-service.js';
 import { LoginService } from '../../src/domain/login/login-service.js';
@@ -20,7 +24,9 @@ import { InMemoryRateLimiter } from '../../src/adapters/ratelimit/in-memory-rate
 import { systemClock } from '../../src/ports/clock.js';
 import type { RateLimiter } from '../../src/ports/rate-limiter.js';
 import type { Client } from '../../src/domain/clients/client.js';
-import { makeTestDeps, TEST_CHALLENGE, TEST_VERIFIER } from '../adapters/http/helpers.js';
+import {
+  makeTestDeps, loginWithCode, TEST_CHALLENGE, TEST_VERIFIER, TEST_CSRF, FORM_HEADERS, extractChallenge,
+} from '../adapters/http/helpers.js';
 
 // Гонки Admin API с обменом кода и параллельный старт миграций на НАСТОЯЩЕМ
 // PostgreSQL. Порядок событий задают барьеры в обёртке Db и лимитере, без пауз.
@@ -107,6 +113,7 @@ describe.skipIf(!URL_ENV)('Postgres: Admin API клиентов против о�
       codes: new AuthorizationCodeService(new PgAuthorizationCodeStore(d), systemClock, 60),
       sessions: new SessionService(new PgSessionStore(d), new PgRefreshTokenStore(d), deps.tokens,
         systemClock, { refreshTtlSeconds: 2592000 }),
+      sso: new PgSsoSessionStore(d),
     });
     const registry = new PgClientRegistry(clientDb);
     const shared = services(clientDb);
@@ -116,6 +123,7 @@ describe.skipIf(!URL_ENV)('Postgres: Admin API клиентов против о�
       ...shared,
       login: new LoginService(registry, new IdentityService(deps.repo), shared.codes),
       clientLock: new PgClientLock(clientDb, services),
+      sso: new SsoSessionService(pgSsoStores(clientDb), systemClock, { ssoTtlSeconds: 3600 }),
     });
     if (opts.rateLimiter) deps.rateLimiter = opts.rateLimiter;
     const app = buildServer(deps);
@@ -128,9 +136,15 @@ describe.skipIf(!URL_ENV)('Postgres: Admin API клиентов против о�
   };
   const adminCall = (app: FastifyInstance, method: 'POST' | 'PATCH' | 'DELETE', url: string, payload?: object) =>
     app.inject({ method, url, headers: { authorization: `Bearer ${ADMIN}` }, ...(payload ? { payload } : {}) });
-  const issue = (deps: Awaited<ReturnType<typeof pgApp>>['deps'], c: Client, provider = 'email') =>
-    deps.codes.issue({ clientId: c.id, clientType: c.type, userId: randomUUID(), redirectUri: c.redirectUris[0]!,
-      codeChallenge: TEST_CHALLENGE, scope: 'openid', auth: { provider, emailVerified: true } });
+  // Код по текущему снимку клиента (как его выдаёт вход); snapshot — снимок,
+  // прочитанный раньше (вход решён до изменения клиента).
+  const issue = async (deps: Awaited<ReturnType<typeof pgApp>>['deps'], c: Client, provider = 'email',
+    snapshot?: Client | null) => {
+    const seen = snapshot !== undefined ? snapshot : await deps.clients.findClient(c.id);
+    return deps.codes.issue({ clientId: c.id, clientType: c.type, clientRegistrationId: seen?.registrationId,
+      userId: randomUUID(), redirectUri: c.redirectUris[0]!, codeChallenge: TEST_CHALLENGE, scope: 'openid',
+      auth: { provider, emailVerified: true } });
+  };
   const exchange = (app: FastifyInstance, c: Client, code: string) =>
     app.inject({ method: 'POST', url: '/oauth/token', payload: { grant_type: 'authorization_code', code,
       client_id: c.id, redirect_uri: c.redirectUris[0]!, code_verifier: TEST_VERIFIER } });
@@ -142,6 +156,74 @@ describe.skipIf(!URL_ENV)('Postgres: Admin API клиентов против о�
     );
     return Number(rows[0]!.n);
   }
+
+  // Вход по коду из письма поверх настоящей таблицы попыток.
+  async function pgCodeApp() {
+    const made = await pgApp();
+    made.deps.codeProvider = new EmailCodeProvider(new PgLoginChallengeStore(db), made.deps.mailer, systemClock, {
+      appName: 'Auth Service', codeTtlMinutes: 15, generateCode: () => 'CODE55',
+    });
+    return made;
+  }
+  const codeForm = (c: Client, extra: Record<string, string>) => new URLSearchParams({
+    client_id: c.id, redirect_uri: c.redirectUris[0]!, code_challenge: TEST_CHALLENGE,
+    code_challenge_method: 'S256', scope: 'openid', state: 'st1', csrf: TEST_CSRF, ...extra,
+  }).toString();
+  const codeStep = (app: FastifyInstance, url: string, c: Client, extra: Record<string, string>,
+    headers: Record<string, string> = FORM_HEADERS) =>
+    app.inject({ method: 'POST', url, payload: codeForm(c, extra), headers });
+
+  it('T02: попытка входа по коду, начатая до пересоздания клиента, не выдаёт код новой регистрации', async () => {
+    const { deps, app } = await pgCodeApp();
+    try {
+      const c = newClient();
+      expect((await adminCall(app, 'POST', '/admin/clients', c)).statusCode).toBe(201);
+      const started = await codeStep(app, '/authorize/identify', c, { email: 'user@x.com' });
+      const challenge = extractChallenge(started.body);
+      expect((await adminCall(app, 'DELETE', `/admin/clients/${c.id}`)).statusCode).toBe(204);
+      expect((await adminCall(app, 'POST', '/admin/clients', c)).statusCode).toBe(201);
+
+      const sent = deps.mailer.sent.length;
+      const resent = await codeStep(app, '/authorize/code/request', c, { challenge });
+      expect(resent.statusCode).toBe(409);
+      expect(resent.body).toContain('Приложение изменилось');
+      expect(deps.mailer.sent.length).toBe(sent);
+
+      const plain = await codeStep(app, '/authorize/code/verify', c, { challenge, code: 'CODE55' });
+      expect(plain.statusCode).toBe(409);
+      expect(plain.headers['location']).toBeUndefined();
+      expect(plain.body).toContain('Приложение изменилось');
+
+      const js = await codeStep(app, '/authorize/code/verify', c, { challenge, code: 'CODE55' },
+        { ...FORM_HEADERS, 'x-auth-navigation': 'replace' });
+      expect(js.statusCode).toBe(409);
+      const body = js.json<{ error: string; restartTo: string }>();
+      expect(body.error).toContain('Приложение изменилось');
+      expect(new URL(body.restartTo, 'https://auth.example').searchParams.get('prompt')).toBe('login');
+
+      const { rows } = await db.query<{ n: string }>(
+        'select count(*) as n from authorization_codes where client_id = $1', [c.id]);
+      expect(Number(rows[0]!.n)).toBe(0);
+    } finally { await app.close(); }
+  });
+
+  it('T02: попытка той же регистрации проходит; попытка без клиента (до миграции 0014) отклоняется', async () => {
+    const { app } = await pgCodeApp();
+    try {
+      const c = newClient();
+      expect((await adminCall(app, 'POST', '/admin/clients', c)).statusCode).toBe(201);
+      const ok = extractChallenge((await codeStep(app, '/authorize/identify', c, { email: 'a@x.com' })).body);
+      expect((await codeStep(app, '/authorize/code/verify', c, { challenge: ok, code: 'CODE55' })).statusCode).toBe(302);
+
+      const legacy = extractChallenge((await codeStep(app, '/authorize/identify', c, { email: 'b@x.com' })).body);
+      await db.query(
+        `update email_login_challenges set client_id = null, client_registration_id = null
+          where consumed_at is null and email = 'b@x.com'`);
+      const res = await codeStep(app, '/authorize/code/verify', c, { challenge: legacy, code: 'CODE55' });
+      expect(res.statusCode).toBe(409);
+      expect(res.body).toContain('Приложение изменилось');
+    } finally { await app.close(); }
+  });
 
   it('R05: код, выданный до удаления клиента, не принимает клиент, заново созданный с тем же id', async () => {
     const { deps, app } = await pgApp();
@@ -163,12 +245,47 @@ describe.skipIf(!URL_ENV)('Postgres: Admin API клиентов против о�
     try {
       const c = newClient();
       expect((await adminCall(app, 'POST', '/admin/clients', c)).statusCode).toBe(201);
+      const snapshot = await deps.clients.findClient(c.id);
       expect((await adminCall(app, 'DELETE', `/admin/clients/${c.id}`)).statusCode).toBe(204);
-      const late = await issue(deps, c);
+      const late = await issue(deps, c, 'email', snapshot);
       expect((await adminCall(app, 'POST', '/admin/clients', c)).statusCode).toBe(201);
       expect((await exchange(app, c, late)).statusCode).toBe(400);
       // Код, выданный уже новой регистрации, работает.
       expect((await exchange(app, c, await issue(deps, c))).statusCode).toBe(200);
+    } finally { await app.close(); }
+  });
+
+  it('T02: вход проверил клиента, до записи кода клиента удалили и создали заново — обмен отклонён', async () => {
+    let recreate: (() => Promise<void>) | undefined;
+    const clientDb = hookedDb(db, {
+      async before(sql) {
+        if (!recreate || !/insert into authorization_codes/i.test(sql)) return;
+        const run = recreate;
+        recreate = undefined;
+        await run();
+      },
+    });
+    const { app } = await pgApp({ clientDb });
+    try {
+      const c = newClient();
+      expect((await adminCall(app, 'POST', '/admin/clients', c)).statusCode).toBe(201);
+      const registrations = async () => (await db.query<{ registration_id: string }>(
+        'select registration_id from clients where id = $1', [c.id])).rows.map((r) => r.registration_id);
+      const before = await registrations();
+      recreate = async () => {
+        expect((await adminCall(app, 'DELETE', `/admin/clients/${c.id}`)).statusCode).toBe(204);
+        expect((await adminCall(app, 'POST', '/admin/clients', c)).statusCode).toBe(201);
+      };
+      const code = await loginWithCode(app, { extra: { client_id: c.id, redirect_uri: c.redirectUris[0]! } });
+      expect(recreate).toBeUndefined();
+      expect(await registrations()).not.toEqual(before);
+      const res = await exchange(app, c, code);
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('invalid_grant');
+      expect(await activeSessions(c.id)).toBe(0);
+      // Вход, решённый уже по новой регистрации, работает.
+      const fresh = await loginWithCode(app, { extra: { client_id: c.id, redirect_uri: c.redirectUris[0]! } });
+      expect((await exchange(app, c, fresh)).statusCode).toBe(200);
     } finally { await app.close(); }
   });
 
@@ -256,6 +373,119 @@ describe.skipIf(!URL_ENV)('Postgres: Admin API клиентов против о�
       expect(await activeSessions(c.id, 'email')).toBe(0);
     } finally { await app.close(); }
   });
+
+  it('T03: refresh, прошедший проверки до PATCH, не выпускает токены после завершения PATCH', async () => {
+    const events = conditions();
+    let armed = false;
+    let touched = false;
+    let atIssue = false;
+    let released = false;
+    let patchDone = false;
+    const release = () => { released = true; events.poke(); };
+    // Refresh продлил сессию, перечитал её (последняя проверка) и стоит перед
+    // выпуском JWT. Отпускаем, когда PATCH завершился или ждёт блокировку
+    // клиента: правильная реализация держит refresh под той же блокировкой.
+    const clientDb = hookedDb(db, {
+      async after(sql) {
+        if (!armed || atIssue) return;
+        if (/update sessions\s+set last_used_at/i.test(sql)) { touched = true; return; }
+        if (!touched || !/from sessions where id = \$1/i.test(sql)) return;
+        atIssue = true;
+        events.poke();
+        await events.wait(() => released);
+      },
+    });
+    const { deps, app } = await pgApp({ clientDb });
+    const issuedAfterPatch: boolean[] = [];
+    const issue0 = deps.tokens.issueAccessAndId.bind(deps.tokens);
+    deps.tokens.issueAccessAndId = (...args) => { issuedAfterPatch.push(patchDone); return issue0(...args); };
+    try {
+      const c = newClient({ allowedProviders: ['email', 'google'] });
+      expect((await adminCall(app, 'POST', '/admin/clients', c)).statusCode).toBe(201);
+      const tokens = (await exchange(app, c, await issue(deps, c, 'email'))).json();
+      issuedAfterPatch.length = 0;
+      armed = true;
+      const refreshing = app.inject({ method: 'POST', url: '/oauth/token',
+        payload: { grant_type: 'refresh_token', refresh_token: tokens.refresh_token } });
+      await events.wait(() => atIssue);
+      const patching = adminCall(app, 'PATCH', `/admin/clients/${c.id}`, { allowedProviders: ['google'] })
+        .then((res) => { patchDone = true; return res; })
+        .finally(release);
+      // PATCH ждёт блокировку клиента — видно только в базе.
+      void until(async () => released || (await admin.query<{ n: string }>(
+        `select count(*) as n from pg_stat_activity where application_name = $1 and wait_event_type = 'Lock'`,
+        [appName])).rows[0]!.n !== '0').then(release);
+      const [patched, refreshed] = await Promise.all([patching, refreshing]);
+      armed = false;
+      expect(patched.statusCode).toBe(200);
+      expect(issuedAfterPatch).not.toContain(true);
+      if (refreshed.statusCode !== 200) expect(refreshed.json().error).toBe('invalid_grant');
+      expect(await activeSessions(c.id, 'email')).toBe(0);
+      const next = refreshed.statusCode === 200 ? refreshed.json().refresh_token : tokens.refresh_token;
+      const again = await app.inject({ method: 'POST', url: '/oauth/token',
+        payload: { grant_type: 'refresh_token', refresh_token: next } });
+      expect(again.statusCode).toBe(400);
+    } finally { await app.close(); }
+  });
+
+  // Выход в браузере идёт одновременно с обменом кода, выданного через его
+  // SSO-цепочку. pause — где обмен ждёт: сессия уже записана, но цепочка ещё
+  // не перепроверена; или цепочка проверена с блокировкой SSO-сессий.
+  for (const pause of [
+    { name: 'сессия записана, цепочка не перепроверена', sql: /^\s*insert into sessions/i, waitForLock: false },
+    { name: 'цепочка проверена под блокировкой', sql: /from sso_sessions[\s\S]*for share/i, waitForLock: true },
+  ]) {
+    it(`P3-2: выход во время обмена кода не оставляет живой сессии (${pause.name})`, async () => {
+      const events = conditions();
+      let armed = false;
+      let paused = false;
+      let released = false;
+      const release = () => { released = true; events.poke(); };
+      const clientDb = hookedDb(db, {
+        async after(sql) {
+          if (!armed || paused || !pause.sql.test(sql)) return;
+          paused = true;
+          events.poke();
+          await events.wait(() => released);
+        },
+      });
+      const { deps, app } = await pgApp({ clientDb });
+      try {
+        const c = newClient();
+        expect((await adminCall(app, 'POST', '/admin/clients', c)).statusCode).toBe(201);
+        const userId = randomUUID();
+        const loginId = randomUUID();
+        const { session, rawToken } = await deps.sso.start(userId, { provider: 'email', emailVerified: true, loginId });
+        const registrationId = (await deps.clients.findClient(c.id))?.registrationId;
+        const code = await deps.codes.issue({ clientId: c.id, clientType: c.type, clientRegistrationId: registrationId,
+          userId, redirectUri: c.redirectUris[0]!, codeChallenge: TEST_CHALLENGE, scope: 'openid',
+          auth: { provider: 'email', emailVerified: true, loginId } });
+        armed = true;
+        let exchanged = false;
+        const exchanging = exchange(app, c, code).finally(() => { exchanged = true; events.poke(); });
+        await events.wait(() => paused || exchanged);
+        // Отдельная копия сервиса выхода: без барьеров, на своих соединениях.
+        const signOut = new SsoSessionService(pgSsoStores(db), systemClock, { ssoTtlSeconds: 3600 }).signOut(rawToken);
+        if (pause.waitForLock && paused) {
+          await until(async () => (await admin.query<{ n: string }>(
+            `select count(*) as n from pg_stat_activity where application_name = $1 and wait_event_type = 'Lock'`,
+            [appName])).rows[0]!.n !== '0' || released);
+          release();
+          await Promise.all([signOut, exchanging]);
+        } else {
+          await signOut;
+          release();
+          await exchanging;
+        }
+        armed = false;
+        expect(paused).toBe(true);
+        const live = await db.query<{ n: string }>(
+          'select count(*) as n from sessions where sso_chain_id = $1 and revoked_at is null', [session.chainId]);
+        expect(live.rows[0]!.n).toBe('0');
+        expect(await activeSessions(c.id)).toBe(0);
+      } finally { await app.close(); }
+    });
+  }
 
   it('R09: код тихого входа, решённого без согласия для internal, не обменивается, если до записи кода клиент стал external', async () => {
     const events = conditions();

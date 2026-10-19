@@ -73,8 +73,8 @@ describe('loadConfig', () => {
       PUBLIC_ISSUER_URL: 'https://auth.example.com',
     } as NodeJS.ProcessEnv);
     expect(cfg.rateLimits.codeVerifyPerIp).toEqual({ limit: 30, windowSeconds: 900 });
-    expect(cfg.rateLimits.codeRequestPerIp).toEqual({ limit: 20, windowSeconds: 3600 });
-    expect(cfg.rateLimits.codeRequestPerEmail).toEqual({ limit: 5, windowSeconds: 3600 });
+    expect(cfg.rateLimits.codeRequestPerIp).toEqual({ limit: 100, windowSeconds: 3600 });
+    expect(cfg.rateLimits.codeRequestPerEmail).toEqual({ limit: 10, windowSeconds: 3600 });
     expect(cfg.rateLimits.codeRequestPerEmailDaily).toEqual({ limit: 20, windowSeconds: 86400 });
   });
 

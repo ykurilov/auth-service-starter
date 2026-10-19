@@ -83,7 +83,7 @@ describe('createAuthMiddleware', () => {
     expect(calls).toBe(1); // дедуп по токену
   });
 
-  it('refresh провалился на protect-пути -> редирект на login с next и чисткой cookie', async () => {
+  it('refresh провалился на protect-пути -> редирект на login с next, cookie не стирается (T14)', async () => {
     const fetchImpl = (async () => Response.json({ error: 'invalid_grant' }, { status: 400 })) as typeof fetch;
     const mw = createAuthMiddleware({ env, fetch: fetchImpl, protect: ['/dashboard'] });
     const cookie = await sessionCookie(60 * 1000);
@@ -92,16 +92,16 @@ describe('createAuthMiddleware', () => {
     const loc = new URL(res.headers.get('location')!);
     expect(loc.pathname).toBe('/api/auth/login');
     expect(loc.searchParams.get('next')).toBe('/dashboard/x');
-    expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toContain('Max-Age=0');
+    expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toBeUndefined();
   });
 
-  it('refresh провалился на НЕ-protect пути -> проходит анонимно (next) с чисткой cookie', async () => {
+  it('refresh провалился на НЕ-protect пути -> проходит анонимно (next), cookie не стирается (T14)', async () => {
     const fetchImpl = (async () => Response.json({ error: 'invalid_grant' }, { status: 400 })) as typeof fetch;
     const mw = createAuthMiddleware({ env, fetch: fetchImpl, protect: ['/dashboard'] });
     const cookie = await sessionCookie(60 * 1000);
     const res = await mw(new Request('https://app.test/public', { headers: { cookie } }), pass);
     expect(res.status).toBe(200);
-    expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toContain('Max-Age=0');
+    expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toBeUndefined();
   });
 
   it('временный сбой refresh на публичной SSR-странице: cookie не вырезается, тихий вход не запускается', async () => {
@@ -213,7 +213,7 @@ describe('createAuthMiddleware', () => {
       expect(new URL(res.headers.get('location')!).pathname).toBe('/api/auth/login');
     });
 
-    it('refresh провалился, fetch на protect-пути -> 401 и чистка cookie', async () => {
+    it('refresh провалился, fetch на protect-пути -> 401, cookie не стирается (T14)', async () => {
       const fetchImpl = (async () => Response.json({ error: 'invalid_grant' }, { status: 400 })) as typeof fetch;
       const mw = createAuthMiddleware({ env, fetch: fetchImpl, protect: ['/dashboard'] });
       const cookie = await sessionCookie(60 * 1000);
@@ -222,7 +222,7 @@ describe('createAuthMiddleware', () => {
         pass,
       );
       expect(res.status).toBe(401);
-      expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toContain('Max-Age=0');
+      expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toBeUndefined();
     });
   });
 });

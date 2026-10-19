@@ -81,14 +81,13 @@ describe('createSessionGuard', () => {
     expect((await unseal<{ refreshToken: string }>(sealed, SECRET))!.refreshToken).toBe('r2');
   });
 
-  it('обновление не удалось на открытом пути -> пропустить анонимно и стереть cookie', async () => {
+  it('обновление не удалось на открытом пути -> пропустить анонимно, cookie не стирать (T14)', async () => {
     const check = createSessionGuard({ env, fetch: refreshFails });
     const cookie = await sessionCookie(60 * 1000);
     const decision = await check(new Request('https://app.test/', { headers: { cookie } }));
     if (decision.kind !== 'pass') throw new Error('ожидали pass');
     expect(decision.user).toBeNull();
-    expect(decision.setCookies).toHaveLength(1);
-    expect(decision.setCookies[0]).toContain('Max-Age=0');
+    expect(decision.setCookies).toEqual([]);
   });
 
   it('нет сессии на защищённой странице -> отказ с редиректом на вход', async () => {

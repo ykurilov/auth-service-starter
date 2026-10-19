@@ -23,6 +23,11 @@ export interface LoginPageInput {
   // Одноразовый nonce для GIS: сервер выпускает его вместе с кнопкой и сверяет
   // с claim nonce id_token (анти-replay). Присутствует только с googleClientId.
   googleNonce?: string;
+  // Google разрешён и настроен, но лимит выпуска nonce исчерпан: вместо кнопки
+  // — пояснение с временем ожидания («через 15 мин»).
+  googleUnavailableFor?: string;
+  // Клиенту разрешён вход по почте. false — формы почты нет (только Google).
+  emailAllowed?: boolean;
 }
 
 const field = (label: string, input: string): string =>
@@ -39,10 +44,10 @@ function restartUrl(p: OidcParams): string {
 // с OIDC-параметрами. Секретов на странице нет — только публичный client id.
 // Кнопку рендерим программно (renderButton), а не data-атрибутами: только так
 // ей можно задать ширину по факту, вровень с остальными кнопками формы.
-function googleSignIn(clientId: string, nonce: string, hf: string, csrfField: string): string {
+function googleSignIn(clientId: string, nonce: string, hf: string, csrfField: string, divider: boolean): string {
   const cid = escapeHtml(clientId);
   const gnonce = escapeHtml(nonce);
-  return `<div class="auth-divider">или</div>
+  return `${divider ? '<div class="auth-divider">или</div>' : ''}
     <form id="google-form" method="post" action="/authorize/google">
       ${hf}
       ${csrfField}
@@ -109,8 +114,11 @@ function codeFormNavigation(p: OidcParams): string {
           });
           var type = response.headers.get('content-type') || '';
           if (type.indexOf('application/json') === -1) {
+            var wait = Number(response.headers.get('retry-after'));
             showError(response.status === 429
-              ? 'Слишком много попыток — подождите немного и попробуйте ещё раз'
+              ? (wait > 0
+                ? 'Слишком много попыток — повторите через ' + Math.ceil(wait / 60) + ' мин'
+                : 'Слишком много попыток — подождите немного и попробуйте ещё раз')
               : 'Не удалось войти, обновите страницу и попробуйте ещё раз');
             return;
           }
@@ -182,16 +190,28 @@ export function loginPage(input: LoginPageInput): string {
         ${restart}
         ${codeFormNavigation(p)}`;
       break;
-    default:
-      body = `<h1 class="h2">Вход</h1>${err}${notice}
-        <p class="muted">Введите почту — пришлём на неё код для входа.</p>
+    default: {
+      const emailForm = `<p class="muted">Введите почту — пришлём на неё код для входа.</p>
         <form method="post" action="/authorize/identify">
           ${hf}
           ${csrfField}
           ${field('Почта', `<input class="input" type="email" name="email" value="${email}" autocomplete="email" autofocus required>`)}
           <button type="submit" class="btn btn-primary">Получить код</button>
-        </form>
-        ${input.googleClientId ? googleSignIn(input.googleClientId, input.googleNonce ?? '', hf, csrfField) : ''}`;
+        </form>`;
+      const emailAllowed = input.emailAllowed ?? true;
+      let google = '';
+      if (input.googleClientId) {
+        google = googleSignIn(input.googleClientId, input.googleNonce ?? '', hf, csrfField, emailAllowed);
+      } else if (input.googleUnavailableFor) {
+        google = `<p class="muted">Вход через Google временно недоступен: слишком много входов из вашей сети. Попробуйте ${escapeHtml(input.googleUnavailableFor)}${emailAllowed ? ' или войдите по почте' : ''}.</p>`;
+      }
+      const none = !emailAllowed && !google
+        ? '<div class="alert alert-danger">Для этого приложения сейчас нет доступного способа входа.</div>'
+        : '';
+      body = `<h1 class="h2">Вход</h1>${err}${notice}${none}
+        ${emailAllowed ? emailForm : ''}
+        ${google}`;
+    }
   }
 
   return pageLayout(title, body);

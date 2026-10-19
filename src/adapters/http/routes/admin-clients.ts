@@ -1,7 +1,7 @@
 import { ZodError } from 'zod';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { HttpDeps } from '../deps.js';
-import type { Client } from '../../../domain/clients/client.js';
+import { publicClient, type Client } from '../../../domain/clients/client.js';
 import {
   ClientValidationError,
   assertProvidersAllowedForType,
@@ -33,7 +33,7 @@ export function registerAdminClients(app: FastifyInstance, deps: HttpDeps): void
 
   app.get('/admin/clients', async (req, reply) => {
     if (!requireAuth(req, reply)) return reply;
-    return reply.status(200).send(await store.list());
+    return reply.status(200).send((await store.list()).map(publicClient));
   });
 
   // Общий хвост создания для обеих форм тела запроса: доменная проверка
@@ -57,7 +57,7 @@ export function registerAdminClients(app: FastifyInstance, deps: HttpDeps): void
       return reply.status(409).send({ error: 'conflict' });
     }
     await store.create(client);
-    return reply.status(201).send(client);
+    return reply.status(201).send(publicClient(client));
   };
 
   app.post('/admin/clients', async (req, reply) => {
@@ -107,7 +107,7 @@ export function registerAdminClients(app: FastifyInstance, deps: HttpDeps): void
     if (!requireAuth(req, reply)) return reply;
     const found = await store.findClient(req.params.id);
     if (!found) return reply.status(404).send({ error: 'not_found' });
-    return reply.status(200).send(found);
+    return reply.status(200).send(publicClient(found));
   });
 
   app.patch<{ Params: { id: string } }>('/admin/clients/:id', async (req, reply) => {
@@ -126,7 +126,7 @@ export function registerAdminClients(app: FastifyInstance, deps: HttpDeps): void
     if (result.status === 'invalid') {
       return reply.status(400).send({ error: 'invalid_request', detail: result.detail });
     }
-    return reply.status(200).send(result.client);
+    return reply.status(200).send(publicClient(result.client));
   });
 
   app.delete<{ Params: { id: string } }>('/admin/clients/:id', async (req, reply) => {

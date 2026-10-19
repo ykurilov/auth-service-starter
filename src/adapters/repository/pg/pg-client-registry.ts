@@ -8,6 +8,7 @@ interface ClientRow {
   redirect_uris: unknown;
   allowed_providers: unknown;
   post_logout_redirect_uris: unknown;
+  registration_id: string;
 }
 
 // jsonb-массив приходит из драйвера уже распарсенным объектом (массивом).
@@ -33,6 +34,7 @@ export class PgClientRegistry implements ClientRegistry {
       type: row.type as Client['type'],
       redirectUris: toStringArray(row.redirect_uris),
       allowedProviders: toStringArray(row.allowed_providers),
+      registrationId: row.registration_id,
     };
     // Колонка nullable: отсутствующий список не превращаем в [].
     if (row.post_logout_redirect_uris != null) {
@@ -42,7 +44,7 @@ export class PgClientRegistry implements ClientRegistry {
   }
 
   private static selectColumns =
-    'id, type, redirect_uris, allowed_providers, post_logout_redirect_uris';
+    'id, type, redirect_uris, allowed_providers, post_logout_redirect_uris, registration_id';
 
   async findClient(id: string): Promise<Client | null> {
     const { rows } = await this.db.query<ClientRow>(

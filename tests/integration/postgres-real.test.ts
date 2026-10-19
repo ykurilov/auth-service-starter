@@ -98,7 +98,7 @@ describe.skipIf(!process.env.DATABASE_URL_TEST)('real PostgreSQL transactions an
     const first = new PgClientRegistry(db);
     const second = new PgClientRegistry(db);
     await Promise.all([first.seedInitial([client]), second.seedInitial([client])]);
-    expect(await first.findClient(client.id)).toEqual(client);
+    expect(await first.findClient(client.id)).toEqual({ ...client, registrationId: expect.any(String) });
     await first.delete(client.id);
     await new PgClientRegistry(db).seedInitial([client]);
     expect(await first.findClient(client.id)).toBeNull();
