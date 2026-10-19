@@ -11,6 +11,8 @@ const byteLength = (s: string) => new TextEncoder().encode(s).length;
 // Готовая строка Set-Cookie или null, если сессия не помещается в cookie:
 // браузер молча выбросил бы её, и вход пошёл бы по кругу.
 export async function sessionCookie(name: string, data: SessionData, secret: string, secure: boolean): Promise<string | null> {
+  // Роли не храним: они читаются из access-токена, а cookie должна уместиться в 4 КБ.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { roles: _roles, ...user } = data.user;
   const sealed = await seal({ ...data, user }, secret, SESSION_MAX_AGE);
   if (byteLength(`${name}=${sealed}`) > MAX_COOKIE_BYTES) return null;

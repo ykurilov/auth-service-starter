@@ -125,13 +125,49 @@ export default function Page() {
 
 async function Greeting() {
   const user = await getUser((await headers()).get('cookie'));
-  return user ? <p>Привет, {user.name ?? user.id}</p>
-    : <a href="/api/auth/login?next=/dashboard">Войти</a>;
+  if (user) return <p>Привет, {user.name ?? user.id}</p>;
+  // eslint-disable-next-line @next/next/no-html-link-for-pages
+  return <a href="/api/auth/login?next=/dashboard">Войти</a>;
 }
 ```
 
 `user.name` есть, только если он заполнен в профиле. При входе по коду из
 письма имени обычно нет: показывайте `user.email ?? user.id`.
+
+Закрытая страница `app/dashboard/page.tsx`. Путь `/dashboard` указан в
+`protect` у proxy, поэтому без входа сюда не попасть: proxy сам уведёт на
+вход и вернёт обратно.
+
+```tsx
+import { Suspense } from 'react';
+import { getUser } from '@/auth';
+import { headers } from 'next/headers';
+
+export default function Dashboard() {
+  return (
+    <main>
+      <h1>Личный кабинет</h1>
+      <Suspense fallback={<p>Загружаем профиль…</p>}>
+        <Profile />
+      </Suspense>
+      {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+      <a href="/api/auth/logout">Выйти</a>
+    </main>
+  );
+}
+
+async function Profile() {
+  const user = await getUser((await headers()).get('cookie'));
+  return <p>Вы вошли как {user?.email ?? user?.id}</p>;
+}
+```
+
+Ссылки на `/api/auth/login` и `/api/auth/logout` — обычные `<a>`, а не
+`<Link>`: вход и выход уходят на сервис входа, нужна полная навигация
+браузера. Правило `@next/next/no-html-link-for-pages` из скелета
+`create-next-app` ругается на такие ссылки в `npm run lint`, поэтому в
+примерах рядом стоит `eslint-disable-next-line`. Сборку это правило не
+ломает.
 
 `getUser()` только читает сессию: просроченный sealed-конверт или access дают
 `null`. Для refresh нужен proxy либо `/api/auth/me`. Не используйте
@@ -184,6 +220,25 @@ Vite или CDN, серверная защита HTML на Hono к ним не �
 API и используйте `requireUser()` для интерфейса. Если HTML отдаёт Hono,
 добавьте нужные пути страниц в `protect`.
 
+В боевом режиме собранные страницы (`npm run build` кладёт их в `dist/`)
+обычно отдаёт сам Hono, тогда Vite не нужен. Добавьте в `server/index.ts`
+после API-маршрутов, перед `serve(...)`:
+
+```ts
+import { serveStatic } from '@hono/node-server/serve-static';
+
+if (process.env.NODE_ENV === 'production') {
+  app.use('*', serveStatic({ root: './dist' }));
+}
+```
+
+`serveStatic` отдаёт файлы как есть: `/` — это `dist/index.html`, а вторая
+страница лежит там, куда её положил Vite, например `/cabinet.html`. Такие
+страницы добавьте в `protect` (`protect: ['/api/notes', '/cabinet.html']`),
+и guard без входа уведёт на вход. `AUTH_APP_URL` в боевом режиме — адрес
+Hono, а не Vite. Запуск: `npm run build`, затем
+`NODE_ENV=production npx tsx server/index.ts`.
+
 Во фронте:
 
 ```ts
@@ -196,7 +251,10 @@ const user = await loadUser(); // публичная страница, одна 
 
 `loadUser()`/`requireUser()` могут выбросить ошибку при сети/503. Покажите её
 пользователю и предложите повтор. Ошибка 503 не запускает вход и не стирает
-cookie. `loginUrl()` возвращает ссылку входа с возвратом на текущую страницу;
+cookie. После сбоя сервиса входа модуль 15 секунд не обращается к нему (см.
+«Сроки и ошибки сессии»), поэтому «Повторить» в эти секунды снова покажет
+ошибку, даже если сервис уже поднялся. Напишите это рядом с кнопкой, например
+«Попробуйте через 15–20 секунд», или повторяйте сами через 20 секунд. `loginUrl()` возвращает ссылку входа с возвратом на текущую страницу;
 `LOGOUT_URL` — `/api/auth/logout`.
 
 ## Сроки и ошибки сессии
@@ -287,8 +345,9 @@ async function Greeting({ searchParams }: Props) {
   const user = await getUser(cookie);
   if (!user && !silentCheckDone(cookie, await searchParams))
     redirect('/api/auth/login?silent=1&next=/');
-  return user ? <p>Привет, {user.name ?? user.id}</p>
-    : <a href="/api/auth/login?next=/">Войти</a>;
+  if (user) return <p>Привет, {user.name ?? user.id}</p>;
+  // eslint-disable-next-line @next/next/no-html-link-for-pages
+  return <a href="/api/auth/login?next=/">Войти</a>;
 }
 ```
 
