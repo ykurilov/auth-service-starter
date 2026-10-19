@@ -1,7 +1,7 @@
-import { seal, unseal } from './cookie-seal.js';
-import { decodeJwtClaims } from './claims.js';
-import { isSessionData, type SessionData } from './session-data.js';
-import { MAX_COOKIE_BYTES, SESSION_MAX_AGE, serializeCookie } from '../cookies.js';
+import { seal, unseal } from './cookie-seal';
+import { decodeJwtClaims } from './claims';
+import { isSessionData, type SessionData } from './session-data';
+import { MAX_COOKIE_BYTES, SESSION_MAX_AGE, serializeCookie } from '../cookies';
 
 // Cookie сессии. Роли отдельно не храним: они уже есть в access-токене и при
 // чтении берутся оттуда. Так cookie растёт с числом ролей почти вдвое медленнее.

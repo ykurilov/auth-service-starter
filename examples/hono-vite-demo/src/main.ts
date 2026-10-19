@@ -1,4 +1,5 @@
 import { loadUser, loginUrl, LOGOUT_URL } from './auth-client';
+import { showWithRetry } from './show-with-retry';
 
 // Главная открыта всем. Вошедший в единый SSO (например, в соседнее
 // приложение) не увидит «Войти»: loadUser() один раз тихо проверит SSO.
@@ -16,4 +17,4 @@ function escape(text: string): string {
   return text.replace(/[&<>"]/g, (ch) => `&#${ch.charCodeAt(0)};`);
 }
 
-void render(document.querySelector('#app')!);
+showWithRetry(document.querySelector('#app')!, render);

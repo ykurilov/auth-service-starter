@@ -57,25 +57,40 @@ describe('PgSessionStore на pg-mem', () => {
     expect(found?.profile).toEqual(session.profile);
   });
 
-  it('T12: ssoChainId переживает round-trip; revokeForSsoChain гасит цепочку и (с userId) все сессии пользователя', async () => {
+  it('T12: ssoChainId переживает round-trip; revokeForSsoChain гасит только цепочку', async () => {
     const chain = randomUUID();
     const user = randomUUID();
     const inChain = makeSession({ ssoChainId: chain });
     const otherChain = makeSession({ ssoChainId: randomUUID() });
     const sameUser = makeSession({ userId: user });
+    const userInChain = makeSession({ userId: user, ssoChainId: chain });
     const noChain = makeSession();
-    for (const s of [inChain, otherChain, sameUser, noChain]) await store.save(s);
+    for (const s of [inChain, otherChain, sameUser, userInChain, noChain]) await store.save(s);
     expect(await store.findById(inChain.id)).toEqual(inChain);
     expect((await store.findById(noChain.id))).not.toHaveProperty('ssoChainId');
 
     const at = new Date('2026-01-02T00:00:00.000Z');
     await store.revokeForSsoChain(chain, at);
     expect((await store.findById(inChain.id))?.revokedAt).toEqual(at);
+    expect((await store.findById(userInChain.id))?.revokedAt).toEqual(at);
+    // Тот же пользователь в другом браузере (без этой цепочки) остаётся.
     expect((await store.findById(sameUser.id))?.revokedAt).toBeNull();
-    await store.revokeForSsoChain(randomUUID(), at, user);
-    expect((await store.findById(sameUser.id))?.revokedAt).toEqual(at);
     expect((await store.findById(otherChain.id))?.revokedAt).toBeNull();
     expect((await store.findById(noChain.id))?.revokedAt).toBeNull();
+  });
+
+  it('A5: revokeOthersInSsoChain гасит в цепочке сессии других пользователей, свои и чужие цепочки не трогает', async () => {
+    const chain = randomUUID();
+    const keep = randomUUID();
+    const kept = makeSession({ userId: keep, ssoChainId: chain });
+    const other = makeSession({ ssoChainId: chain });
+    const otherChain = makeSession({ ssoChainId: randomUUID() });
+    for (const s of [kept, other, otherChain]) await store.save(s);
+    const at = new Date('2026-01-02T00:00:00.000Z');
+    await store.revokeOthersInSsoChain(chain, keep, at);
+    expect((await store.findById(other.id))?.revokedAt).toEqual(at);
+    expect((await store.findById(kept.id))?.revokedAt).toBeNull();
+    expect((await store.findById(otherChain.id))?.revokedAt).toBeNull();
   });
 
   it('findById неизвестного -> null', async () => {

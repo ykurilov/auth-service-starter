@@ -77,6 +77,38 @@ describe('SsoSessionService', () => {
     expect((await service.resolve(fresh.rawToken))!.userId).toBe('u2');
   });
 
+  it('смена аккаунта начинает новую цепочку и закрывает прежнюю целиком', async () => {
+    const { service, sessions } = makeService();
+    const alice = await service.start('alice', auth);
+    const aliceHere = await appSession(sessions, 'alice', alice.session.chainId);
+    const bob = await service.start('bob', auth, alice.rawToken, alice.bindingToken);
+    expect(bob.session.chainId).not.toBe(alice.session.chainId);
+    expect(bob.bindingToken).not.toBe(alice.bindingToken);
+    expect((await sessions.findById(aliceHere.id))!.revokedAt).not.toBeNull();
+    // Прежняя привязка удалена: выход по ней Боба не гасит.
+    await service.signOut(null, alice.bindingToken);
+    expect(await service.resolve(bob.rawToken)).not.toBeNull();
+  });
+
+  it('повторный вход по прежней cookie после смены аккаунта продолжает прежнюю цепочку и не трогает новый аккаунт', async () => {
+    const { service, sessions } = makeService();
+    const alice = await service.start('alice', auth);
+    const bob = await service.start('bob', auth, alice.rawToken);
+    const bobHere = await appSession(sessions, 'bob', bob.session.chainId);
+    const aliceAgain = await service.start('alice', auth, alice.rawToken);
+    expect(aliceAgain.session.chainId).toBe(alice.session.chainId);
+    expect((await sessions.findById(bobHere.id))!.revokedAt).toBeNull();
+    expect(await service.resolve(bob.rawToken)).not.toBeNull();
+  });
+
+  it('повторный вход того же пользователя его сессии приложений в цепочке не гасит', async () => {
+    const { service, sessions } = makeService();
+    const first = await service.start('alice', auth);
+    const aliceHere = await appSession(sessions, 'alice', first.session.chainId);
+    await service.start('alice', auth, first.rawToken);
+    expect((await sessions.findById(aliceHere.id))!.revokedAt).toBeNull();
+  });
+
   it('R19: неизвестный прежний токен не мешает новой сессии', async () => {
     const { service } = makeService();
     const fresh = await service.start('u1', auth, 'garbage');
@@ -87,14 +119,16 @@ describe('SsoSessionService', () => {
 describe('SsoSessionService.signOut (P3-3)', () => {
   const revoked = async (sessions: InMemorySessionStore, s: Session) => (await sessions.findById(s.id))!.revokedAt !== null;
 
-  it('живой токен: цепочка браузера и все сессии пользователя на любых устройствах', async () => {
+  it('живой токен гасит цепочку браузера, но не сессии пользователя на других устройствах', async () => {
     const { service, sessions } = makeService();
     const { session, rawToken } = await service.start('u1', auth);
     const here = await appSession(sessions, 'u1', session.chainId);
     const phone = await appSession(sessions, 'u1');
+    const otherBrowser = await appSession(sessions, 'u1', 'other-browser-chain');
     await service.signOut(rawToken);
     expect(await revoked(sessions, here)).toBe(true);
-    expect(await revoked(sessions, phone)).toBe(true);
+    expect(await revoked(sessions, phone)).toBe(false);
+    expect(await revoked(sessions, otherBrowser)).toBe(false);
   });
 
   it('истёкший токен гасит только свою цепочку, не сессии на других устройствах', async () => {

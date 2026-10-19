@@ -111,10 +111,10 @@ export class InMemoryIdentityRepository implements IdentityRepository {
     // Паритет с pg-ограничениями: unique(user_id, email) и partial-unique на
     // verified email. Молчаливый push скрывал бы гонки линковки от тестов.
     if (this.emails.some((e) => e.userId === data.userId && e.email === normalized)) {
-      throw new IdentityConflictError(`email уже привязан к пользователю: ${normalized}`);
+      throw new IdentityConflictError('email уже привязан к пользователю');
     }
     if (data.verified && this.emails.some((e) => e.email === normalized && e.verified)) {
-      throw new IdentityConflictError(`verified email уже занят другим пользователем: ${normalized}`);
+      throw new IdentityConflictError('verified email уже занят другим пользователем');
     }
     const email: EmailAddress = {
       id: randomUUID(),

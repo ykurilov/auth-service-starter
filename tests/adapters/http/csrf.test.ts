@@ -25,7 +25,9 @@ const config: Config = {
     identifyPerIp: { limit: 60, windowSeconds: 900 },
     googleNoncePerIp: { limit: 300, windowSeconds: 900 },
     codeRequest: { limit: 3, windowSeconds: 900 },
-    codeRequestPerEmail: { limit: 8, windowSeconds: 3600 },
+    // Мягче боевой паузы (1 письмо в минуту): тесты, не про лимиты, входят на
+    // один адрес несколько раз подряд. Боевую паузу проверяет authorize-r4.
+    codeRequestEmailPause: { limit: 8, windowSeconds: 60 },
     codeRequestPerIp: { limit: 20, windowSeconds: 3600 },
     codeRequestPerEmailDaily: { limit: 20, windowSeconds: 86400 },
     codeVerifyPerIp: { limit: 30, windowSeconds: 900 },

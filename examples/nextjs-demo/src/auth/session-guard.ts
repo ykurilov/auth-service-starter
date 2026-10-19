@@ -1,7 +1,7 @@
-import { loadModuleConfig, type LoadConfigOptions } from './core/config.js';
-import { createSessionManager, type RetiredRefreshTokens } from './core/session-manager.js';
-import { getUser } from './server.js';
-import type { SessionUser } from './core/session-data.js';
+import { loadModuleConfig, type LoadConfigOptions } from './core/config';
+import { createSessionManager, type RetiredRefreshTokens } from './core/session-manager';
+import { getUser } from './server';
+import type { SessionUser } from './core/session-data';
 
 // Защита запросов без привязки к фреймворку: по Web Request решает, пропустить
 // запрос или отказать. Адаптеры (Next.js, Hono) лишь переводят решение на язык

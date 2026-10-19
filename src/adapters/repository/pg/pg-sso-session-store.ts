@@ -1,7 +1,14 @@
 import type { Db } from '../../db/pool.js';
-import type { SsoSession, SsoSessionStore, SsoStores } from '../../../domain/sso/sso-session.js';
+import {
+  MAX_BINDINGS_PER_CHAIN,
+  type BrowserBinding,
+  type SsoSession,
+  type SsoSessionStore,
+  type SsoStores,
+} from '../../../domain/sso/sso-session.js';
 import { PgSessionStore } from './pg-session-store.js';
 import type { AuthSnapshot } from '../../../domain/login/authorization-code.js';
+import { PgIdentityRepository } from './pg-identity-repository.js';
 
 // Строка sso_sessions в snake_case; auth — jsonb, времена — timestamptz (Date).
 interface SsoSessionRow {
@@ -15,6 +22,8 @@ interface SsoSessionRow {
   expires_at: Date;
   revoked_at: Date | null;
 }
+
+interface BindingRow { chain_id: string; token_hash: string; created_at: Date; expires_at: Date }
 
 const SELECT_COLUMNS =
   'id, user_id, auth, token_hash, chain_id, created_at, last_used_at, expires_at, revoked_at';
@@ -45,6 +54,10 @@ export class PgSsoSessionStore implements SsoSessionStore {
       expiresAt: row.expires_at,
       revokedAt: row.revoked_at ?? null,
     };
+  }
+
+  private static toBinding(row: BindingRow): BrowserBinding {
+    return { chainId: row.chain_id, tokenHash: row.token_hash, createdAt: row.created_at, expiresAt: row.expires_at };
   }
 
   async save(session: SsoSession): Promise<void> {
@@ -91,6 +104,26 @@ export class PgSsoSessionStore implements SsoSessionStore {
     return rows[0] ? PgSsoSessionStore.toSession(rows[0]) : null;
   }
 
+  // Транзакционная advisory-блокировка: снимается с COMMIT/ROLLBACK. Ключ —
+  // из chainId с префиксом; коллизия лишь сериализует несвязанные цепочки.
+  async lockChain(chainId: string): Promise<void> {
+    await this.db.query('select pg_advisory_xact_lock($1::bigint)', [PgSsoSessionStore.chainKey(chainId)]);
+  }
+
+  // По возрастанию ключа, а не chainId: у двух цепочек ключ может совпасть, и
+  // порядок по chainId тогда не был бы порядком самих блокировок. Совпавший
+  // ключ берётся один раз.
+  async lockChains(chainIds: readonly string[]): Promise<void> {
+    const byKey = new Map(chainIds.map((id) => [BigInt(PgSsoSessionStore.chainKey(id)), id]));
+    for (const key of [...byKey.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+      await this.lockChain(byKey.get(key)!);
+    }
+  }
+
+  private static chainKey(chainId: string): string {
+    return PgIdentityRepository.advisoryKey(`sso-chain:${chainId}`);
+  }
+
   async holdSignedIn(chainId: string, userId: string): Promise<boolean> {
     const { rowCount } = await this.db.query(
       `select id from sso_sessions
@@ -122,6 +155,77 @@ export class PgSsoSessionStore implements SsoSessionStore {
     );
   }
 
+  // Привязки — в sso_chain_bindings; в sso_browser_bindings (одна на цепочку)
+  // их пишет копия прежней версии во время раскатки: их тоже находим, а при
+  // продлении переносим сюда.
+  async findBinding(tokenHash: string): Promise<BrowserBinding | null> {
+    for (const table of ['sso_chain_bindings', 'sso_browser_bindings']) {
+      const { rows } = await this.db.query<BindingRow>(
+        `select chain_id, token_hash, created_at, expires_at from ${table} where token_hash = $1`,
+        [tokenHash],
+      );
+      if (rows[0]) return PgSsoSessionStore.toBinding(rows[0]);
+    }
+    return null;
+  }
+
+  async addBinding(binding: BrowserBinding): Promise<void> {
+    await this.db.query(
+      'insert into sso_chain_bindings (token_hash, chain_id, created_at, expires_at) values ($1, $2, $3, $4)',
+      [binding.tokenHash, binding.chainId, binding.createdAt, binding.expiresAt],
+    );
+    // Срок первой лишней привязки по убыванию сроков: она и более давние уходят.
+    const { rows } = await this.db.query<{ expires_at: Date }>(
+      `select expires_at from sso_chain_bindings where chain_id = $1
+        order by expires_at desc offset $2 limit 1`,
+      [binding.chainId, MAX_BINDINGS_PER_CHAIN],
+    );
+    if (rows[0]) {
+      await this.db.query(
+        'delete from sso_chain_bindings where chain_id = $1 and expires_at <= $2 and token_hash <> $3',
+        [binding.chainId, rows[0].expires_at, binding.tokenHash],
+      );
+    }
+  }
+
+  async renewBinding(tokenHash: string, expiresAt: Date): Promise<boolean> {
+    const renewed = await this.db.query(
+      'update sso_chain_bindings set expires_at = $2 where token_hash = $1',
+      [tokenHash, expiresAt],
+    );
+    if (renewed.rowCount > 0) return true;
+    const moved = await this.db.query(
+      `insert into sso_chain_bindings (token_hash, chain_id, created_at, expires_at)
+         select token_hash, chain_id, created_at, $2::timestamptz from sso_browser_bindings where token_hash = $1`,
+      [tokenHash, expiresAt],
+    );
+    await this.db.query('delete from sso_browser_bindings where token_hash = $1', [tokenHash]);
+    return moved.rowCount > 0;
+  }
+
+  async deleteBinding(tokenHash: string): Promise<void> {
+    await this.db.query('delete from sso_chain_bindings where token_hash = $1', [tokenHash]);
+    await this.db.query('delete from sso_browser_bindings where token_hash = $1', [tokenHash]);
+  }
+
+  async deleteChainBindings(chainId: string): Promise<void> {
+    await this.db.query('delete from sso_chain_bindings where chain_id = $1', [chainId]);
+    await this.db.query('delete from sso_browser_bindings where chain_id = $1', [chainId]);
+  }
+
+  // Простые запросы вместо greatest() с подзапросами: так понимает и pg-mem.
+  async browserDeadline(chainId: string): Promise<Date | null> {
+    const times: number[] = [];
+    for (const table of ['sso_chain_bindings', 'sso_browser_bindings', 'sso_sessions']) {
+      const { rows } = await this.db.query<{ expires_at: Date }>(
+        `select expires_at from ${table} where chain_id = $1 order by expires_at desc limit 1`,
+        [chainId],
+      );
+      times.push(...rows.map((r) => r.expires_at.getTime()));
+    }
+    return times.length > 0 ? new Date(Math.max(...times)) : null;
+  }
+
   // `revoked_at < $1` уже подразумевает not null (NULL < x -> NULL -> false);
   // без явного `is not null` ещё и потому, что pg-mem теряет строки на этой
   // связке при индексе по колонке (см. PgSessionStore.deleteExpired).
@@ -130,6 +234,8 @@ export class PgSsoSessionStore implements SsoSessionStore {
       'delete from sso_sessions where expires_at < $1 or revoked_at < $1',
       [before],
     );
-    return rowCount;
+    const bindings = await this.db.query('delete from sso_chain_bindings where expires_at < $1', [before]);
+    const legacy = await this.db.query('delete from sso_browser_bindings where expires_at < $1', [before]);
+    return rowCount + bindings.rowCount + legacy.rowCount;
   }
 }

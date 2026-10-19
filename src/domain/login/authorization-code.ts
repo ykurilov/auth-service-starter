@@ -25,6 +25,10 @@ export interface AuthorizationGrant {
   scope: string;
   nonce?: string;
   auth: AuthSnapshot;
+  // Цепочка SSO браузера, через SSO-сессию которой выдан код (тихий вход и
+  // экран согласия). Нет — код выдан вводом учётных данных: цепочку находим
+  // по auth.loginId.
+  ssoChainId?: string;
 }
 
 // В хранилище — только SHA-256-хеш кода. Код привязан к клиенту, redirect_uri и PKCE-challenge.
@@ -40,6 +44,7 @@ export interface AuthorizationCodeRecord {
   scope: string;
   nonce?: string;
   auth: AuthSnapshot;
+  ssoChainId?: string;
   expiresAt: Date;
   consumedAt: Date | null;
 }

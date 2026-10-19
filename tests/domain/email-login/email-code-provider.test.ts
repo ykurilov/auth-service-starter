@@ -1,12 +1,14 @@
-import { describe, it, expect } from 'vitest';
-import { EmailCodeProvider } from '../../../src/domain/email-login/email-code-provider.js';
+import { describe, it, expect, vi } from 'vitest';
+import { EmailCodeProvider, bindingHashOf } from '../../../src/domain/email-login/email-code-provider.js';
 import { InMemoryLoginChallengeStore } from '../../../src/adapters/repository/in-memory-login-challenge-store.js';
 import { FakeMailer } from '../../../src/adapters/mail/fake-mailer.js';
 import {
   ChallengeClientChangedError,
   InvalidCredentialsError,
   InvalidEmailError,
+  UnconfirmedCodeDeliveryError,
 } from '../../../src/domain/email-login/errors.js';
+import type { OutgoingEmail } from '../../../src/ports/mailer.js';
 import { MailDeliveryError } from '../../../src/ports/mailer.js';
 import { advanceableClock } from '../../helpers/advanceable-clock.js';
 
@@ -108,11 +110,11 @@ describe('EmailCodeProvider', () => {
     await expect(provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: '444444' })).resolves.toBeTruthy();
   });
 
-  it('T08: сбой отправки при переотправке — прежний код действует, переотправка не списана', async () => {
+  it('T08: провайдер отказал при переотправке — прежний код действует, переотправка не списана', async () => {
     const { provider, mailer } = make(['111111', '222222', '333333']);
     const { handle } = await provider.start({ email: 'a@b.com', binding: 'b', client: TEST_CLIENT });
     const send = mailer.send.bind(mailer);
-    mailer.send = async () => { throw new MailDeliveryError('timeout'); };
+    mailer.send = async () => { throw new MailDeliveryError('422', 'rejected'); };
     await expect(provider.resend({ handle, binding: 'b', client: TEST_CLIENT })).rejects.toBeInstanceOf(MailDeliveryError);
     mailer.send = send;
     expect(await provider.describe({ handle, binding: 'b' })).toMatchObject({ resendsLeft: 3 });
@@ -194,5 +196,158 @@ describe('EmailCodeProvider', () => {
     const { mailer, provider } = make();
     await provider.start({ email: 'a@b.com', binding: 'b', client: TEST_CLIENT });
     expect(mailer.last?.subject).toContain('код для входа');
+  });
+
+  // Письмо уходит только по команде теста: так задаётся порядок, в котором
+  // провайдер отвечает на параллельные переотправки.
+  function holdSends(mailer: FakeMailer) {
+    const held: { email: OutgoingEmail; deliver: () => void; fail: (err: Error) => void }[] = [];
+    mailer.send = (email) =>
+      new Promise<void>((resolve, reject) => {
+        held.push({ email, deliver: () => { mailer.sent.push(email); resolve(); }, fail: reject });
+      });
+    return held;
+  }
+  const codeOf = (email: OutgoingEmail) => /\d{6}/.exec(email.text)![0];
+
+  it('R4-A1: таймаут переотправки — слот не возвращается, действует код этого письма', async () => {
+    const { provider, mailer } = make(['111111', '222222']);
+    const { handle } = await provider.start({ email: 'a@b.com', binding: 'b', client: TEST_CLIENT });
+    const send = mailer.send.bind(mailer);
+    mailer.send = async (email) => { await send(email); throw new MailDeliveryError('timeout'); };
+    const err = await provider.resend({ handle, binding: 'b', client: TEST_CLIENT }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnconfirmedCodeDeliveryError);
+    expect((err as UnconfirmedCodeDeliveryError).challenge).toEqual({ handle, email: 'a@b.com' });
+    expect(await provider.describe({ handle, binding: 'b' })).toMatchObject({ resendsLeft: 2 });
+    await expect(provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: '111111' })).rejects.toBeInstanceOf(InvalidCredentialsError);
+    await expect(provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: '222222' })).resolves.toBeTruthy();
+  });
+
+  it('R4-A1: таймауты не обходят лимит трёх переотправок', async () => {
+    const { provider, mailer } = make(['100000', '200000', '300000', '400000', '500000']);
+    const { handle } = await provider.start({ email: 'a@b.com', binding: 'b', client: TEST_CLIENT });
+    const send = mailer.send.bind(mailer);
+    mailer.send = async (email) => { await send(email); throw new MailDeliveryError('timeout'); };
+    for (let i = 0; i < 3; i++) {
+      await expect(provider.resend({ handle, binding: 'b', client: TEST_CLIENT })).rejects.toBeInstanceOf(UnconfirmedCodeDeliveryError);
+    }
+    expect(await provider.resend({ handle, binding: 'b', client: TEST_CLIENT })).toBeNull();
+    expect(mailer.sent).toHaveLength(4);
+    await expect(provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: '400000' })).resolves.toBeTruthy();
+  });
+
+  it('R4-A2: опоздавшее письмо более раннего слота не затирает код более нового', async () => {
+    const { provider, mailer } = make(['111111', '222222', '333333']);
+    const { handle } = await provider.start({ email: 'a@b.com', binding: 'b', client: TEST_CLIENT });
+    const held = holdSends(mailer);
+    const first = provider.resend({ handle, binding: 'b', client: TEST_CLIENT });
+    await vi.waitFor(() => expect(held).toHaveLength(1));
+    const second = provider.resend({ handle, binding: 'b', client: TEST_CLIENT });
+    await vi.waitFor(() => expect(held).toHaveLength(2));
+    held[1]!.deliver();
+    expect(await second).toEqual({ email: 'a@b.com' });
+    held[0]!.deliver();
+    expect(await first).toEqual({ email: 'a@b.com' });
+    const [older, newer] = [codeOf(held[0]!.email), codeOf(held[1]!.email)];
+    await expect(provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: older })).rejects.toBeInstanceOf(InvalidCredentialsError);
+    await expect(provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: newer })).resolves.toBeTruthy();
+  });
+
+  it('R4-A2: отказ провайдера по новому слоту оставляет код более раннего письма', async () => {
+    const { provider, mailer } = make(['111111', '222222', '333333']);
+    const { handle } = await provider.start({ email: 'a@b.com', binding: 'b', client: TEST_CLIENT });
+    const held = holdSends(mailer);
+    const first = provider.resend({ handle, binding: 'b', client: TEST_CLIENT });
+    await vi.waitFor(() => expect(held).toHaveLength(1));
+    const second = provider.resend({ handle, binding: 'b', client: TEST_CLIENT });
+    await vi.waitFor(() => expect(held).toHaveLength(2));
+    held[1]!.fail(new MailDeliveryError('422', 'rejected'));
+    await expect(second).rejects.toBeInstanceOf(MailDeliveryError);
+    held[0]!.deliver();
+    await first;
+    expect(await provider.describe({ handle, binding: 'b' })).toMatchObject({ resendsLeft: 2 });
+    await expect(provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: codeOf(held[0]!.email) })).resolves.toBeTruthy();
+  });
+
+  it('R4-A2: слот, возвращённый после отказа, не получает номер уже действующего кода', async () => {
+    const { provider, mailer } = make(['111111', '222222', '333333', '444444']);
+    const { handle } = await provider.start({ email: 'a@b.com', binding: 'b', client: TEST_CLIENT });
+    const held = holdSends(mailer);
+    const first = provider.resend({ handle, binding: 'b', client: TEST_CLIENT });
+    await vi.waitFor(() => expect(held).toHaveLength(1));
+    const second = provider.resend({ handle, binding: 'b', client: TEST_CLIENT });
+    await vi.waitFor(() => expect(held).toHaveLength(2));
+    held[1]!.deliver();
+    await second;
+    held[0]!.fail(new MailDeliveryError('422', 'rejected'));
+    await expect(first).rejects.toBeInstanceOf(MailDeliveryError);
+    // Слот вернулся, и следующая переотправка — новее действующего кода.
+    const third = provider.resend({ handle, binding: 'b', client: TEST_CLIENT });
+    await vi.waitFor(() => expect(held).toHaveLength(3));
+    held[2]!.deliver();
+    expect(await third).toEqual({ email: 'a@b.com' });
+    await expect(provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: codeOf(held[1]!.email) })).rejects.toBeInstanceOf(InvalidCredentialsError);
+    await expect(provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: codeOf(held[2]!.email) })).resolves.toBeTruthy();
+  });
+});
+
+describe('R5: resume — возврат браузера к своей живой попытке', () => {
+  const OTHER_REGISTRATION = { id: 'app', registrationId: '00000000-0000-4000-8000-000000000002' };
+
+  it('тот же браузер, адрес и клиент: тот же handle, письма нет, код из первого письма подходит', async () => {
+    const { mailer, provider } = make(['111111']);
+    const started = await provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
+    const resumed = await provider.resume({ email: ' U@X.com ', binding: 'b', client: TEST_CLIENT });
+    expect(resumed).toEqual(started);
+    expect(mailer.sent).toHaveLength(1);
+    expect((await provider.verify({ handle: resumed!.handle, binding: 'b', client: TEST_CLIENT, code: '111111' })).email).toBe('u@x.com');
+  });
+
+  it('берёт последнюю живую попытку', async () => {
+    const { provider, clock } = make();
+    await provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
+    clock.advance(1);
+    const latest = await provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
+    expect((await provider.resume({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT }))?.handle).toBe(latest.handle);
+  });
+
+  it('другой браузер, адрес, регистрация клиента или привязка Google — null', async () => {
+    const { provider } = make();
+    await provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
+    expect(await provider.resume({ email: 'u@x.com', binding: 'other', client: TEST_CLIENT })).toBeNull();
+    expect(await provider.resume({ email: 'v@x.com', binding: 'b', client: TEST_CLIENT })).toBeNull();
+    expect(await provider.resume({ email: 'u@x.com', binding: 'b', client: OTHER_REGISTRATION })).toBeNull();
+    expect(await provider.resume({ email: 'u@x.com', binding: 'b', client: { id: 'app' } })).toBeNull();
+    const link = { provider: 'google', subject: 'g-1' };
+    expect(await provider.resume({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT, link })).toBeNull();
+    await provider.start({ email: 'g@x.com', binding: 'b', client: TEST_CLIENT, link });
+    expect(await provider.resume({ email: 'g@x.com', binding: 'b', client: TEST_CLIENT })).toBeNull();
+    expect(await provider.resume({ email: 'g@x.com', binding: 'b', client: TEST_CLIENT, link: { ...link, subject: 'g-2' } })).toBeNull();
+    expect(await provider.resume({ email: 'g@x.com', binding: 'b', client: TEST_CLIENT, link })).not.toBeNull();
+  });
+
+  it('погашенная, истёкшая или без проверок попытка — null', async () => {
+    const { provider, clock } = make(['111111']);
+    const done = await provider.start({ email: 'a@x.com', binding: 'b', client: TEST_CLIENT });
+    await provider.verify({ handle: done.handle, binding: 'b', client: TEST_CLIENT, code: '111111' });
+    expect(await provider.resume({ email: 'a@x.com', binding: 'b', client: TEST_CLIENT })).toBeNull();
+    const spent = await provider.start({ email: 'c@x.com', binding: 'b', client: TEST_CLIENT });
+    for (let i = 0; i < 5; i++)
+      await provider.verify({ handle: spent.handle, binding: 'b', client: TEST_CLIENT, code: '000000' }).catch(() => undefined);
+    expect(await provider.resume({ email: 'c@x.com', binding: 'b', client: TEST_CLIENT })).toBeNull();
+    await provider.start({ email: 'e@x.com', binding: 'b', client: TEST_CLIENT });
+    clock.advance(15 * 60);
+    expect(await provider.resume({ email: 'e@x.com', binding: 'b', client: TEST_CLIENT })).toBeNull();
+  });
+
+  it('попытка, начатая со случайным handle (до обновления), не подхватывается', async () => {
+    const { store, provider } = make();
+    await store.create({
+      id: 'legacy', handleHash: 'h', bindingHash: bindingHashOf('b'), email: 'u@x.com',
+      clientId: TEST_CLIENT.id, clientRegistrationId: TEST_CLIENT.registrationId, codeHash: 'c',
+      attempts: 0, maxAttempts: 5, resends: 0, maxResends: 3, lastSlot: 0, codeSlot: 0, link: null,
+      createdAt: T0, expiresAt: new Date(T0.getTime() + 15 * 60_000), consumedAt: null,
+    });
+    expect(await provider.resume({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT })).toBeNull();
   });
 });

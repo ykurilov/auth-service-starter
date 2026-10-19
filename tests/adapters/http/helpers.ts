@@ -3,7 +3,7 @@ import type { HttpDeps } from '../../../src/adapters/http/deps.js';
 import type { Config } from '../../../src/config/config.js';
 import type { SsoStores } from '../../../src/domain/sso/sso-session.js';
 import type { Client } from '../../../src/domain/clients/client.js';
-import { fakeClock } from '../../helpers/fake-clock.js';
+import { advanceableClock, type AdvanceableClock } from '../../helpers/advanceable-clock.js';
 import pino from 'pino';
 import { loadSigningKey } from '../../../src/domain/tokens/signing-key.js';
 import { TokenService } from '../../../src/domain/tokens/token-service.js';
@@ -57,9 +57,11 @@ export function authorizeForm(extra: Record<string, string>): string {
 }
 
 const ISSUER = 'https://auth.example';
+// internal: вход по коду сразу отдаёт код. Тесты про внешнее приложение
+// (экран согласия после входа, consent_required) задают type: 'external' явно.
 const DEFAULT_CLIENT: Client = {
   id: 'app',
-  type: 'external',
+  type: 'internal',
   redirectUris: ['https://app.example/cb'],
   allowedProviders: ['email'],
 };
@@ -68,8 +70,12 @@ export interface TestDeps extends HttpDeps {
   mailer: FakeMailer;
   repo: InMemoryIdentityRepository;
   codeProvider: EmailCodeProvider;
+  // Часы сервиса: тесты пауз и окон лимитов сдвигают время.
+  clock: AdvanceableClock;
   // Хранилища SSO и сессий приложений (тест подменяет методы для сбоев).
   ssoStores: SsoStores;
+  // То же SSO-хранилище с транзакциями без БД (для своей InMemoryClientLock).
+  ssoSessionStore: InMemorySsoSessionStore;
 }
 
 // handle попытки входа по коду из HTML экрана ввода кода (скрытое поле challenge).
@@ -112,18 +118,25 @@ export async function makeTestDeps(opts?: {
   // Тест защиты за прокси ставит 1, чтобы req.ip брался из X-Forwarded-For.
   trustProxy?: number;
 }): Promise<TestDeps> {
-  const clock = fakeClock(new Date('2026-07-02T00:00:00Z'));
+  const clock = advanceableClock(new Date('2026-07-02T00:00:00Z'));
   const defaultRateLimits: RateLimits = {
     identifyPerIp: { limit: 60, windowSeconds: 900 },
     googleNoncePerIp: { limit: 300, windowSeconds: 900 },
     codeRequest: { limit: 4, windowSeconds: 900 },
-    codeRequestPerEmail: { limit: 8, windowSeconds: 3600 },
+    // Мягче боевой паузы (1 письмо в минуту): тесты, не про лимиты, входят на
+    // один адрес несколько раз подряд. Боевую паузу проверяет authorize-r4.
+    codeRequestEmailPause: { limit: 8, windowSeconds: 60 },
     codeRequestPerIp: { limit: 20, windowSeconds: 3600 },
     codeRequestPerEmailDaily: { limit: 20, windowSeconds: 86400 },
     codeVerifyPerIp: { limit: 30, windowSeconds: 900 },
     token: { limit: 60, windowSeconds: 900 },
     revoke: { limit: 60, windowSeconds: 900 },
   };
+  // Ключ, которого нет среди лимитов (например, переименованный), иначе
+  // молча пропал бы: тест шёл бы на лимите по умолчанию.
+  const unknownLimits = Object.keys(opts?.rateLimits ?? {}).filter((key) => !(key in defaultRateLimits));
+  if (unknownLimits.length > 0)
+    throw new Error(`makeTestDeps: неизвестные лимиты ${unknownLimits.join(', ')}; есть: ${Object.keys(defaultRateLimits).join(', ')}`);
   const config: Config = {
     port: 3016,
     issuerUrl: ISSUER,
@@ -200,7 +213,9 @@ export async function makeTestDeps(opts?: {
     otpRateLimiter: new InMemoryRateLimiter(clock),
     mailer,
     repo,
+    clock,
     ssoStores,
+    ssoSessionStore,
   };
 }
 
@@ -208,6 +223,8 @@ export async function makeTestDeps(opts?: {
 // authorization code. identify (отправка кода) → code/verify (обмен на код).
 // fixedCode фабрики по умолчанию 'CODE55', поэтому verify детерминирован без
 // чтения письма. extra подмешивается в обе формы (напр. nonce для id_token).
+// Внешнее приложение (клиент по умолчанию) получает код только после экрана
+// согласия — помощник нажимает «Продолжить» за пользователя.
 // Возвращает выданный authorization code из редиректа.
 export async function loginWithCode(
   app: FastifyInstance,
@@ -223,10 +240,36 @@ export async function loginWithCode(
     payload: authorizeForm({ challenge, code, ...extra }),
     headers: FORM_HEADERS,
   });
-  const location = res.headers['location'] as string | undefined;
+  let location = res.headers['location'] as string | undefined;
   if (!location)
     throw new Error(`ожидался редирект с кодом, получен статус ${res.statusCode}`);
+  if (location.startsWith('/authorize?')) location = await confirmConsent(app, res, location);
   const issued = new URL(location).searchParams.get('code');
   if (!issued) throw new Error('в редиректе нет authorization code');
   return issued;
+}
+
+// Экран согласия после входа во внешнее приложение: открыть его с SSO-cookie
+// из ответа входа и нажать «Продолжить как …». Возвращает адрес редиректа.
+export async function confirmConsent(
+  app: FastifyInstance,
+  loginResponse: { cookies: { name: string; value: string }[] },
+  consentUrl: string,
+): Promise<string> {
+  const sso = loginResponse.cookies.find((c) => c.name === 'sso')?.value;
+  if (!sso) throw new Error('вход не выставил SSO-cookie');
+  const cookie = `${FORM_HEADERS.cookie}; sso=${sso}`;
+  const page = await app.inject({ url: consentUrl, headers: { cookie } });
+  const expectedUser = /name="expected_user" value="([^"]+)"/.exec(page.body)?.[1];
+  if (!expectedUser) throw new Error(`ожидался экран согласия, получен статус ${page.statusCode}`);
+  const params = Object.fromEntries(new URL(consentUrl, 'https://auth.example').searchParams);
+  const confirm = await app.inject({
+    method: 'POST',
+    url: '/authorize/confirm',
+    headers: { ...FORM_HEADERS, cookie },
+    payload: new URLSearchParams({ ...params, csrf: TEST_CSRF, expected_user: expectedUser }).toString(),
+  });
+  const location = confirm.headers['location'] as string | undefined;
+  if (!location) throw new Error(`подтверждение: статус ${confirm.statusCode}`);
+  return location;
 }

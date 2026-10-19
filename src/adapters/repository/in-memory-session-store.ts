@@ -55,11 +55,15 @@ export class InMemorySessionStore implements SessionStore {
     }
   }
 
-  async revokeForSsoChain(chainId: string, at: Date, userId?: string): Promise<void> {
+  async revokeForSsoChain(chainId: string, at: Date): Promise<void> {
     for (const s of this.sessions.values()) {
-      if (s.revokedAt === null && (s.ssoChainId === chainId || (userId !== undefined && s.userId === userId))) {
-        s.revokedAt = at;
-      }
+      if (s.revokedAt === null && s.ssoChainId === chainId) s.revokedAt = at;
+    }
+  }
+
+  async revokeOthersInSsoChain(chainId: string, keepUserId: string, at: Date): Promise<void> {
+    for (const s of this.sessions.values()) {
+      if (s.revokedAt === null && s.ssoChainId === chainId && s.userId !== keepUserId) s.revokedAt = at;
     }
   }
 

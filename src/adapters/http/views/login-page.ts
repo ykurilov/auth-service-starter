@@ -149,6 +149,35 @@ function codeFormNavigation(p: OidcParams): string {
   </script>`;
 }
 
+// Обычные формы (почта, переотправка) уходят нативным POST: кнопка
+// блокируется после первого нажатия, чтобы двойной клик или Enter не
+// отправили второй запрос, пока почтовый провайдер отвечает. Блок снимают
+// страница, возвращённая кнопкой «Назад» из кеша браузера, и пауза дольше
+// ожидания провайдера (на случай остановленной загрузки).
+const SUBMIT_ONCE = `<script>
+    (function () {
+      var forms = document.querySelectorAll('form[data-submit-once]');
+      function unlock(form) {
+        delete form.dataset.sent;
+        var list = form.querySelectorAll('button[type="submit"]');
+        for (var j = 0; j < list.length; j++) list[j].disabled = false;
+      }
+      for (var i = 0; i < forms.length; i++) {
+        forms[i].addEventListener('submit', function (event) {
+          var form = this;
+          if (form.dataset.sent) { event.preventDefault(); return; }
+          form.dataset.sent = '1';
+          var list = form.querySelectorAll('button[type="submit"]');
+          for (var j = 0; j < list.length; j++) list[j].disabled = true;
+          setTimeout(function () { unlock(form); }, 15000);
+        });
+      }
+      window.addEventListener('pageshow', function () {
+        for (var i = 0; i < forms.length; i++) unlock(forms[i]);
+      });
+    })();
+  </script>`;
+
 export function loginPage(input: LoginPageInput): string {
   const p = input.params;
   const hf = hiddenFields(p);
@@ -180,7 +209,7 @@ export function loginPage(input: LoginPageInput): string {
         <p id="code-restart" hidden><a id="code-restart-link" class="btn btn-primary" href="${escapeHtml(restartUrl(p))}">Ввести почту заново</a></p>
         <div id="code-resend">
           <div class="auth-divider">не пришёл?</div>
-          <form method="post" action="/authorize/code/request">
+          <form method="post" action="/authorize/code/request" data-submit-once>
             ${hf}
             ${csrfField}
             ${challengeField}
@@ -188,11 +217,12 @@ export function loginPage(input: LoginPageInput): string {
           </form>
         </div>
         ${restart}
-        ${codeFormNavigation(p)}`;
+        ${codeFormNavigation(p)}
+        ${SUBMIT_ONCE}`;
       break;
     default: {
       const emailForm = `<p class="muted">Введите почту — пришлём на неё код для входа.</p>
-        <form method="post" action="/authorize/identify">
+        <form method="post" action="/authorize/identify" data-submit-once>
           ${hf}
           ${csrfField}
           ${field('Почта', `<input class="input" type="email" name="email" value="${email}" autocomplete="email" autofocus required>`)}
@@ -209,7 +239,7 @@ export function loginPage(input: LoginPageInput): string {
         ? '<div class="alert alert-danger">Для этого приложения сейчас нет доступного способа входа.</div>'
         : '';
       body = `<h1 class="h2">Вход</h1>${err}${notice}${none}
-        ${emailAllowed ? emailForm : ''}
+        ${emailAllowed ? `${emailForm}${SUBMIT_ONCE}` : ''}
         ${google}`;
     }
   }

@@ -1,7 +1,7 @@
-import { createAuthHandlers } from './handlers.js';
-import { createSessionGuard, type GuardOptions } from './session-guard.js';
-import { getUser } from './server.js';
-import type { SessionUser } from './core/session-data.js';
+import { createAuthHandlers } from './handlers';
+import { createSessionGuard, type GuardOptions } from './session-guard';
+import { getUser } from './server';
+import type { SessionUser } from './core/session-data';
 
 // Адаптер Hono: маршруты входа, защита запросов и пользователь в обработчике.
 //

@@ -20,13 +20,14 @@ interface AuthorizationCodeRow {
   scope: string;
   nonce: string | null;
   auth: AuthSnapshot;
+  sso_chain_id: string | null;
   expires_at: Date;
   consumed_at: Date | null;
 }
 
 const SELECT_COLUMNS = [
   'id', 'code_hash', 'client_id', 'client_type', 'client_registration_id', 'user_id', 'redirect_uri', 'code_challenge',
-  'scope', 'nonce', 'auth', 'expires_at', 'consumed_at',
+  'scope', 'nonce', 'auth', 'sso_chain_id', 'expires_at', 'consumed_at',
 ].map((column) => `ac.${column}`).join(', ');
 
 // Postgres-реализация AuthorizationCodeStore. Контракт совпадает с in-memory
@@ -54,6 +55,7 @@ export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
     // nonce optional: колонка nullable, null => поле опускаем (как in-memory).
     if (row.nonce !== null) record.nonce = row.nonce;
     if (row.client_registration_id !== null) record.clientRegistrationId = row.client_registration_id;
+    if (row.sso_chain_id !== null) record.ssoChainId = row.sso_chain_id;
     return record;
   }
 
@@ -61,8 +63,8 @@ export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
     await this.db.query(
       `insert into authorization_codes
          (id, code_hash, client_id, user_id, redirect_uri, code_challenge, scope, nonce, auth,
-          expires_at, consumed_at, client_registration_id, client_type)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          expires_at, consumed_at, client_registration_id, client_type, sso_chain_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         record.id,
         record.codeHash,
@@ -77,6 +79,7 @@ export class PgAuthorizationCodeStore implements AuthorizationCodeStore {
         record.consumedAt,
         record.clientRegistrationId ?? null,
         record.clientType,
+        record.ssoChainId ?? null,
       ],
     );
   }

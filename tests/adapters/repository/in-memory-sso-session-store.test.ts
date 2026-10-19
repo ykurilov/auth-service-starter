@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { InMemorySsoSessionStore } from '../../../src/adapters/repository/in-memory-sso-session-store.js';
+import { InMemorySessionStore } from '../../../src/adapters/repository/in-memory-session-store.js';
+import { InMemoryRefreshTokenStore } from '../../../src/adapters/repository/in-memory-refresh-token-store.js';
+import { InMemorySsoSessionStore, inMemorySsoStores } from '../../../src/adapters/repository/in-memory-sso-session-store.js';
 import type { SsoSession } from '../../../src/domain/sso/sso-session.js';
+import { bindingContract } from './sso-binding-contract.js';
 
 function session(overrides: Partial<SsoSession> = {}): SsoSession {
   return {
@@ -18,6 +21,8 @@ function session(overrides: Partial<SsoSession> = {}): SsoSession {
 }
 
 describe('InMemorySsoSessionStore', () => {
+  bindingContract(() => new InMemorySsoSessionStore());
+
   it('T12: findByLogin и revokeChain', async () => {
     const store = new InMemorySsoSessionStore();
     await store.save(session({ auth: { provider: 'email', loginId: 'l1' } }));
@@ -106,5 +111,60 @@ describe('InMemorySsoSessionStore', () => {
     expect(deleted).toBe(1);
     expect(await store.findByHash('h-old')).toBeNull();
     expect(await store.findByHash('h-recent')).not.toBeNull();
+  });
+});
+
+describe('R5: lockChain без БД — очередь по цепочке до конца транзакции', () => {
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+
+  function stores() {
+    const sso = new InMemorySsoSessionStore();
+    return inMemorySsoStores(sso, new InMemorySessionStore(new InMemoryRefreshTokenStore()));
+  }
+
+  it('транзакции одной цепочки идут по очереди, разных цепочек — параллельно', async () => {
+    const s = stores();
+    const events: string[] = [];
+    const tx = (name: string, chainId: string) =>
+      s.atomically(async ({ sso }) => {
+        await sso.lockChain(chainId);
+        events.push(`${name}:start`);
+        await tick();
+        events.push(`${name}:end`);
+      });
+    await Promise.all([tx('a', 'c1'), tx('b', 'c1'), tx('x', 'c2')]);
+    expect(events.indexOf('b:start')).toBeGreaterThan(events.indexOf('a:end'));
+    expect(events.indexOf('x:start')).toBeLessThan(events.indexOf('a:end'));
+  });
+
+  it('повторная блокировка той же цепочки в транзакции не ждёт саму себя; сбой снимает блокировку', async () => {
+    const s = stores();
+    await s.atomically(async ({ sso }) => {
+      await sso.lockChain('c1');
+      await sso.lockChain('c1');
+    });
+    await expect(
+      s.atomically(async ({ sso }) => {
+        await sso.lockChain('c1');
+        throw new Error('сбой');
+      }),
+    ).rejects.toThrow('сбой');
+    await s.atomically(async ({ sso }) => sso.lockChain('c1'));
+  });
+
+  it('вне транзакции lockChain дожидается держателя и сразу отпускает', async () => {
+    const s = stores();
+    const events: string[] = [];
+    const holder = s.atomically(async ({ sso }) => {
+      await sso.lockChain('c1');
+      await tick();
+      events.push('holder:end');
+    });
+    await Promise.resolve();
+    await s.sso.lockChain('c1');
+    events.push('outside');
+    await holder;
+    expect(events).toEqual(['holder:end', 'outside']);
+    await s.atomically(async ({ sso }) => sso.lockChain('c1'));
   });
 });

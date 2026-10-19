@@ -5,8 +5,13 @@ HttpOnly-cookie и обновляет сессию на сервере. Брау
 пользователя. Нужны Node.js 20+ либо совместимая среда с Web Crypto, fetch,
 Request и Response. Сам модуль не импортирует Next.js, Hono или другие пакеты.
 
-Скопируйте `module/server` целиком в серверную папку приложения, например
-`src/auth`. Для Vite скопируйте также `module/browser/auth-client.ts` во фронт.
+Скопируйте `module/server` целиком в серверную папку приложения. В скелете
+`create-next-app` это `auth/` в корне проекта (импорт `@/auth`), а при
+`--src-dir` — `src/auth`. Для Vite скопируйте также
+`module/browser/auth-client.ts` во фронт. Внутренние импорты модуля записаны
+без расширений (`./handlers`), поэтому его без настроек собирают Turbopack,
+webpack, Vite и `tsx`. Для своей проверки типов нужен
+`"moduleResolution": "bundler"`, как в скелетах Next.js и Vite.
 Клиент должен быть заранее зарегистрирован в Auth V3. Callback фиксирован:
 `<origin приложения>/api/auth/callback`; адрес возврата после выхода — `<origin>/`.
 
@@ -39,20 +44,14 @@ Auth V3, поэтому адрес сервиса должен быть HTTPS, �
 
 ## Next.js
 
-Для ESM-импортов `./x.js` из `.ts` добавьте в `next.config.mjs`:
-
-```js
-export default {
-  webpack(config) {
-    config.resolve.extensionAlias = { '.js': ['.ts', '.js'] };
-    return config;
-  },
-};
-```
+Инструкция рассчитана на Next.js 16 со скелетом `npx create-next-app@latest`:
+Turbopack, `next.config.ts` с `cacheComponents: true`. В `next.config.ts`
+для модуля ничего добавлять не нужно, флаг `--webpack` тоже не нужен.
 
 Фабрики проверяют переменные `AUTH_*` сразу при создании. Создавайте их при
 первом запросе, а не при загрузке файла: `next build` загружает маршруты, и
-сборка без `AUTH_*` (Docker, CI без секретов) иначе упадёт.
+сборка без `AUTH_*` (Docker, CI без секретов) иначе упадёт. Локально задайте
+их в `.env.local`, Next.js загрузит его сам.
 
 `app/api/auth/[action]/route.ts`:
 
@@ -66,7 +65,7 @@ export const GET = (request: Request) => auth().GET(request);
 export const POST = (request: Request) => auth().POST(request);
 ```
 
-`middleware.ts`:
+`proxy.ts` в корне проекта (при `--src-dir` — в `src/`):
 
 ```ts
 import { createAuthMiddleware } from '@/auth';
@@ -74,23 +73,25 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 let auth: ReturnType<typeof createAuthMiddleware> | undefined;
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   auth ??= createAuthMiddleware({ env: process.env, protect: ['/dashboard'] });
   return auth(req, (headers) => NextResponse.next({ request: { headers } }));
 }
 
 export const config = {
-  runtime: 'nodejs',
   matcher: ['/((?!api/auth/|_next/static|_next/image|favicon.ico).*)'],
 };
 ```
 
-`runtime: 'nodejs'` (Next.js 15.5+) запускает middleware в одном процессе с
-route handlers. Тогда выход и новый вход гасят refresh, который middleware
-начал раньше (см. «Сроки и ошибки сессии»). На Edge runtime middleware живёт в
-отдельной песочнице и этой защиты не получает.
+В Next.js 16 файл `middleware.ts` переименован в `proxy.ts`. Proxy всегда
+работает в Node.js, в одном процессе с route handlers, и опцию `runtime` не
+принимает. Поэтому выход и новый вход гасят refresh, который proxy начал
+раньше (см. «Сроки и ошибки сессии»). В Next.js 15.5 тот же код лежит в
+`middleware.ts`: функция называется `middleware`, а в `config` нужно добавить
+`runtime: 'nodejs'`. На Edge runtime middleware живёт в отдельной песочнице и
+этой защиты не получает.
 
-Callback middleware теперь получает `Headers` текущего запроса: обновлённая
+Callback proxy получает `Headers` текущего запроса: обновлённая
 сессия уже доступна серверным компонентам через `headers()` и `cookies()`.
 При очистке сессии она удалена и из текущего запроса. Если на публичной
 странице refresh временно не удался, cookie сессии в запросе остаётся, а
@@ -103,28 +104,54 @@ Callback middleware теперь получает `Headers` текущего з�
 Возвращать из callback обычный `Response(200)` в реальном Next.js нельзя —
 это завершит запрос вместо продолжения.
 
-Серверный компонент:
+Серверный компонент. С `cacheComponents` данные запроса (`headers()`,
+`cookies()`, `searchParams`) можно читать только внутри `<Suspense>`: без него
+`next build` падает с ошибкой «Uncached data was accessed outside of
+`<Suspense>`». Остальная страница собирается заранее, а часть с пользователем
+приходит при запросе:
 
 ```tsx
+import { Suspense } from 'react';
 import { getUser } from '@/auth';
 import { headers } from 'next/headers';
 
-export default async function Page() {
+export default function Page() {
+  return (
+    <Suspense fallback={<p>Проверяем вход…</p>}>
+      <Greeting />
+    </Suspense>
+  );
+}
+
+async function Greeting() {
   const user = await getUser((await headers()).get('cookie'));
   return user ? <p>Привет, {user.name ?? user.id}</p>
     : <a href="/api/auth/login?next=/dashboard">Войти</a>;
 }
 ```
 
+`user.name` есть, только если он заполнен в профиле. При входе по коду из
+письма имени обычно нет: показывайте `user.email ?? user.id`.
+
 `getUser()` только читает сессию: просроченный sealed-конверт или access дают
-`null`. Для refresh нужен middleware либо `/api/auth/me`. Не используйте
+`null`. Для refresh нужен proxy либо `/api/auth/me`. Не используйте
 клиентское отображение пользователя как защиту серверных данных.
 
 ## Hono + Vite
 
+Проект можно создать так: `npm create vite@latest my-app -- --template vanilla-ts`,
+затем `npm install hono @hono/node-server` и `npm install -D tsx @types/node`.
+Модуль скопируйте в `server/auth`, клиент — в `src/auth-client.ts`. Сервер
+лежит в `server/index.ts` и запускается через `tsx`: `npx tsx watch server/index.ts`
+в разработке и `npx tsx server/index.ts` в боевом режиме. Переменные `AUTH_*`
+положите в `.env` (в `.gitignore`) и загрузите первой строкой сервера:
+`process.loadEnvFile('.env')` (Node.js 20.12+). Готовый пример —
+`examples/hono-vite-demo`.
+
 ```ts
+import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { createHonoAuth } from './auth/hono.js';
+import { createHonoAuth } from './auth/hono';
 
 const app = new Hono();
 const auth = createHonoAuth({ env: process.env, protect: ['/api/notes'] });
@@ -135,15 +162,24 @@ app.get('/api/notes', async (c) => {
   if (!user) return c.json({ error: 'unauthenticated' }, 401);
   return c.json({ owner: user.id });
 });
+
+serve({ fetch: app.fetch, port: 3008 });
 ```
+
+Без сессии guard отвечает на защищённый путь по типу запроса. `fetch()` из
+браузера и запрос с `Accept: application/json` получают `401`. Переход по
+ссылке получает редирект на вход. Запрос без `Sec-Fetch-Mode` и с
+`Accept: */*`, как у `curl` по умолчанию, тоже считается переходом и получает
+`302`: проверяйте API командой `curl -H 'Accept: application/json'`.
 
 `auth.user(c)` после guard возвращает результат проверки именно текущего
 запроса, включая refresh или очистку. Без guard он только читает сессию.
 `/api/auth/me` самостоятельно обновляет сессию и работает без внешнего guard.
 Для выхода необходима регистрация POST, одного `app.get()` недостаточно.
 
-В разработке Vite должен проксировать `/api` на Hono. `AUTH_APP_URL` — адрес,
-который видит браузер, например `http://localhost:3007`. Если страницы отдаёт
+В разработке Vite должен проксировать `/api` на Hono: в `vite.config.ts`
+`server: { proxy: { '/api': 'http://localhost:3008' } }`. `AUTH_APP_URL` — адрес,
+который видит браузер, например `http://localhost:5173` у Vite. Если страницы отдаёт
 Vite или CDN, серверная защита HTML на Hono к ним не применяется: защищайте
 API и используйте `requireUser()` для интерфейса. Если HTML отдаёт Hono,
 добавьте нужные пути страниц в `protect`.
@@ -174,9 +210,9 @@ cookie. `loginUrl()` возвращает ссылку входа с возвр�
   или запоздавший refresh этого токена не выдаёт `Set-Cookie`: не возвращает
   сессию после выхода и не затирает сессию нового входа. Пометка одна на
   процесс для каждого client id: её видят все фабрики модуля — обработчики,
-  guard, Hono и middleware Next.js в Node runtime. Настраивать ничего не нужно.
+  guard, Hono и proxy Next.js (или middleware в Node runtime). Настраивать ничего не нужно.
 - Ограничение: пометка не выходит за пределы процесса. Если у приложения
-  несколько экземпляров или middleware Next.js работает на Edge runtime,
+  несколько экземпляров или middleware Next.js 15 работает на Edge runtime,
   refresh, начатый до выхода в другом процессе или песочнице, ещё может
   вернуть cookie прежней сессии. Её refresh-токен уже отозван, поэтому такая
   сессия живёт не дольше срока access (обычно 15 минут) и не обновляется.
@@ -208,7 +244,8 @@ cookie. `loginUrl()` возвращает ссылку входа с возвр�
 - `/api/auth/login?next=/x` сначала проверяет SSO с `prompt=none`, затем при
   необходимости открывает интерактивный вход. Метка тихой проверки этот шаг
   не отменяет: пользователь мог войти в соседнее приложение, и тогда вход
-  пройдёт без экрана входа и согласия.
+  в internal-приложение пройдёт без экрана входа и согласия. External-приложение
+  получает вход только после экрана согласия.
 - `silent=1` выполняет только тихую проверку и возвращает на публичную страницу.
 - `silent=0` сразу открывает интерактивный вход; смену аккаунта можно выбрать
   на странице сервиса.
@@ -230,12 +267,22 @@ cookie. `loginUrl()` возвращает ссылку входа с возвр�
 Публичная Next.js-страница обязана учитывать и cookie, и query:
 
 ```tsx
+import { Suspense } from 'react';
 import { getUser, silentCheckDone } from '@/auth';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
-export default async function Home({ searchParams }: Props) {
+
+export default function Home({ searchParams }: Props) {
+  return (
+    <Suspense fallback={<p>Проверяем вход…</p>}>
+      <Greeting searchParams={searchParams} />
+    </Suspense>
+  );
+}
+
+async function Greeting({ searchParams }: Props) {
   const cookie = (await headers()).get('cookie');
   const user = await getUser(cookie);
   if (!user && !silentCheckDone(cookie, await searchParams))
@@ -325,7 +372,14 @@ Guard никогда не обновляет сессию на маршрута�
 npm run typecheck:module
 npm run typecheck
 npm test -- tests/module
+npm run test:browser
 ```
+
+`npm run test:browser` проверяет выход в настоящем Chromium через Playwright:
+после «Выйти» браузер должен дойти до `/logout` сервиса. Страница
+подтверждения ставит CSP `form-action`, а Chrome применяет его и к редиректу
+после отправки формы, поэтому в нём разрешён origin `AUTH_URL`. Перед первым
+запуском поставьте браузер: `npx playwright install chromium`.
 
 Регрессии проверяют временные ошибки и отзыв, самостоятельный `/me`,
 серверный TTL, несколько вкладок и PKCE/state, Hono, logout и Next.js.

@@ -1,11 +1,11 @@
-import { loadModuleConfig, type LoadConfigOptions } from './core/config.js';
-import { OidcClient } from './core/oidc-client.js';
-import { createSessionManager, sharedRetiredRefreshTokens, type RetiredRefreshTokens } from './core/session-manager.js';
-import { temporaryUnavailable } from './session-guard.js';
-import { createPkce } from './core/pkce.js';
-import { seal, unseal } from './core/cookie-seal.js';
-import { buildSessionData, type SessionData } from './core/session-data.js';
-import { readSession, sessionCookie } from './core/session-cookie.js';
+import { loadModuleConfig, type LoadConfigOptions } from './core/config';
+import { OidcClient } from './core/oidc-client';
+import { createSessionManager, sharedRetiredRefreshTokens, type RetiredRefreshTokens } from './core/session-manager';
+import { temporaryUnavailable } from './session-guard';
+import { createPkce } from './core/pkce';
+import { seal, unseal } from './core/cookie-seal';
+import { buildSessionData, type SessionData } from './core/session-data';
+import { readSession, sessionCookie } from './core/session-cookie';
 import {
   authCookieNames,
   SILENT_CHECK_PARAM,
@@ -17,7 +17,7 @@ import {
   clearCookie,
   parseCookies,
   isSecureAppUrl,
-} from './cookies.js';
+} from './cookies';
 
 // Режим тихой проверки (prompt=none) в текущем входе:
 // then-interactive — не вышло тихо, сразу обычный вход;
@@ -329,7 +329,9 @@ export function createAuthHandlers(options: LoadConfigOptions = {}, retiredOverr
       `<input type="hidden" name="csrf" value="${token}"><button type="submit">Выйти</button></form>` +
       '<p><a href="/">Отмена</a></p></html>', {
       headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
-        'content-security-policy': "frame-ancestors 'none'; form-action 'self'; base-uri 'none'",
+        // Chrome проверяет form-action и на редиректе после отправки: POST
+        // уводит на /logout сервиса, поэтому его origin тоже разрешён.
+        'content-security-policy': `frame-ancestors 'none'; form-action 'self' ${config.authUrl}; base-uri 'none'`,
         'set-cookie': serializeCookie(names.logout, token, { maxAgeSeconds: LOGOUT_MAX_AGE, secure }) },
     });
   }

@@ -68,7 +68,7 @@ describe('SSO flow (несколько приложений)', () => {
     await app.close();
   });
 
-  it('1. вход в app1 по коду → 302 с кодом и sso-cookie', async () => {
+  it('1. вход во внешнее app1 по коду → sso-cookie и экран согласия вместо кода', async () => {
     const identify = await app.inject({
       method: 'POST',
       url: '/authorize/identify',
@@ -91,10 +91,11 @@ describe('SSO flow (несколько приложений)', () => {
       }).toString(),
       headers: FORM,
     });
-    expect(res.statusCode).toBe(302);
-    const location = new URL(res.headers['location'] as string);
-    expect(location.origin + location.pathname).toBe('https://app1.example/cb');
-    expect(location.searchParams.get('code')).toBeTruthy();
+    expect(res.statusCode).toBe(303);
+    const location = new URL(res.headers['location'] as string, 'https://auth.example');
+    expect(location.pathname).toBe('/authorize');
+    expect(location.searchParams.get('client_id')).toBe('app1');
+    expect(location.searchParams.get('code')).toBeNull();
     sso = readSetCookie(res, 'sso');
     expect(sso).toBeTruthy();
   });

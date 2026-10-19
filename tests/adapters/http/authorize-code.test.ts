@@ -253,6 +253,45 @@ describe('POST вход по коду на почту', () => {
     await app.close();
   });
 
+  it('D2: верный код не тратит бюджет проверок IP — класс за одним IP входит целиком', async () => {
+    const deps = await makeTestDeps({ rateLimits: { codeVerifyPerIp: { limit: 2, windowSeconds: 900 } } });
+    const app = buildServer(deps);
+    for (const email of ['a@x.com', 'b@x.com', 'c@x.com', 'd@x.com', 'e@x.com']) {
+      const challenge = await startCodeLogin(app, email);
+      expect((await verify(app, challenge, 'CODE55')).statusCode).toBe(302);
+    }
+    // Бюджет цел: две ошибки ещё допускаются, третья упирается в лимит.
+    const f = await startCodeLogin(app, 'f@x.com');
+    expect((await verify(app, f, 'BAD1')).statusCode).toBe(200);
+    expect((await verify(app, f, 'BAD2')).statusCode).toBe(200);
+    expect((await verify(app, f, 'CODE55')).statusCode).toBe(429);
+    await app.close();
+  });
+
+  it('D2: боевые лимиты по умолчанию пропускают группу из 40 человек за одним IP', async () => {
+    const prod = loadConfig({ PUBLIC_ISSUER_URL: 'https://auth.example' } as NodeJS.ProcessEnv).rateLimits;
+    const deps = await makeTestDeps({ rateLimits: prod });
+    const app = buildServer(deps);
+    const statuses: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      const csrf = `browser-${i}`;
+      const headers = browserHeaders(csrf);
+      const id = await app.inject({
+        method: 'POST',
+        url: '/authorize/identify',
+        payload: new URLSearchParams({ ...oidc({ csrf }), email: `student${i}@x.com` }).toString(),
+        headers,
+      });
+      const challenge = extractChallenge(id.body);
+      // Каждый третий сначала ошибается в коде.
+      if (i % 3 === 0) expect((await verify(app, challenge, 'BAD999', headers, csrf)).statusCode).toBe(200);
+      statuses.push((await verify(app, challenge, 'CODE55', headers, csrf)).statusCode);
+      deps.clock.advance(10);
+    }
+    expect(statuses.filter((s) => s !== 302)).toEqual([]);
+    await app.close();
+  });
+
   it('F10: общий бюджет отправок одного IP на все адреса', async () => {
     const deps = await makeTestDeps({ rateLimits: { codeRequestPerIp: { limit: 2, windowSeconds: 3600 } } });
     const app = buildServer(deps);
@@ -358,11 +397,11 @@ describe('R15: письмо не ушло', () => {
     await app.close();
   });
 
-  it('сбой отправки при повторе кода → 503, экран кода с ошибкой', async () => {
+  it('отказ провайдера при повторе кода → 503, экран кода с ошибкой', async () => {
     const deps = await makeTestDeps();
     const app = buildServer(deps);
     const challenge = await startCodeLogin(app, 'user@x.com');
-    deps.mailer.send = async () => { throw new MailDeliveryError('timeout'); };
+    deps.mailer.send = async () => { throw new MailDeliveryError('422', 'rejected'); };
     const res = await app.inject({
       method: 'POST',
       url: '/authorize/code/request',

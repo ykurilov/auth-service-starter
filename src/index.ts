@@ -55,7 +55,7 @@ import { PgClientLock } from './adapters/repository/pg/pg-client-lock.js';
 import { InMemoryClientLock } from './adapters/repository/in-memory-client-lock.js';
 import type { ClientLock } from './domain/clients/client-lock.js';
 import { PgEmailSecretStore } from './adapters/repository/pg/pg-email-secret-store.js';
-import { CleanupService } from './domain/maintenance/cleanup-service.js';
+import { pgCleanupService } from './adapters/repository/pg/pg-cleanup.js';
 import { startCleanupSchedule, type CleanupSchedule } from './domain/maintenance/cleanup-schedule.js';
 import type { IdentityRepository } from './domain/identity/identity-repository.js';
 import type { ClientRegistry, ClientWriteStore } from './domain/clients/client.js';
@@ -106,6 +106,8 @@ export async function bootstrap(
   let authCodeStore: AuthorizationCodeStore;
   // Только без БД: гашение кодов клиента для InMemoryClientLock.
   let inMemoryCodeStore: InMemoryAuthorizationCodeStore | undefined;
+  // Только без БД: транзакции SSO-хранилища для InMemoryClientLock.
+  let inMemorySsoSessions: InMemorySsoSessionStore | undefined;
   let sessionStore: SessionStore;
   let refreshTokenStore: RefreshTokenStore;
   let ssoSessionStore: SsoSessionStore;
@@ -143,8 +145,7 @@ export async function bootstrap(
     emailSecretStore = new PgEmailSecretStore(db);
     loginChallengeStore = new PgLoginChallengeStore(db);
     googleNonceStore = new PgGoogleNonceStore(db);
-    const pgOtpLimiter = new PgRateLimiter(db, systemClock);
-    otpRateLimiter = pgOtpLimiter;
+    otpRateLimiter = new PgRateLimiter(db, systemClock);
 
     // Ключи подписи — из БД (источник истины, переживают рестарт). Если активного
     // нет (первый запуск) — генерируем и сидируем один. ensureActive устойчив к гонке:
@@ -178,14 +179,7 @@ export async function bootstrap(
     // Только для БД — in-memory-хранилища живут не дольше процесса и сами
     // теряются при рестарте. Останавливается при закрытии сервера (onClose
     // ниже), до закрытия пула.
-    const cleanup = new CleanupService(
-      authCodeStore,
-      emailSecretStore,
-      sessionStore,
-      ssoSessionStore,
-      systemClock,
-      [loginChallengeStore, googleNonceStore, pgOtpLimiter],
-    );
+    const cleanup = pgCleanupService(db, systemClock);
     cleanupSchedule = startCleanupSchedule(
       async () => {
         const counts = await cleanup.runOnce();
@@ -204,8 +198,9 @@ export async function bootstrap(
     const inMemoryRefreshTokens = new InMemoryRefreshTokenStore();
     sessionStore = new InMemorySessionStore(inMemoryRefreshTokens);
     refreshTokenStore = inMemoryRefreshTokens;
-    ssoSessionStore = new InMemorySsoSessionStore();
-    ssoStores = inMemorySsoStores(ssoSessionStore, sessionStore);
+    inMemorySsoSessions = new InMemorySsoSessionStore();
+    ssoSessionStore = inMemorySsoSessions;
+    ssoStores = inMemorySsoStores(inMemorySsoSessions, sessionStore);
     emailSecretStore = new InMemoryEmailSecretStore();
     loginChallengeStore = new InMemoryLoginChallengeStore();
     googleNonceStore = new InMemoryGoogleNonceStore();
@@ -252,7 +247,7 @@ export async function bootstrap(
       }))
     : new InMemoryClientLock(
         clientRegistry as ClientWriteStore,
-        { codes: authCodeService, sessions: sessionService, sso: ssoSessionStore },
+        { codes: authCodeService, sessions: sessionService, sso: inMemorySsoSessions! },
         (clientId) => inMemoryCodeStore!.invalidateForClient(clientId, systemClock.now()),
       );
 

@@ -51,7 +51,8 @@ describe.skipIf(!process.env.DATABASE_URL_TEST)('real PostgreSQL transactions an
     const wrapped = (): RefreshTokenStore => {
       const store = new PgRefreshTokenStore(db);
       return { save: store.save.bind(store), rotate: store.rotate.bind(store), consume: store.consume.bind(store),
-        findById: store.findById.bind(store), async findByHash(hash) {
+        findById: store.findById.bind(store), findSessionIdByFamily: store.findSessionIdByFamily.bind(store),
+        pruneHistory: store.pruneHistory.bind(store), async findByHash(hash) {
           const record = await store.findByHash(hash);
           if (++reads === 2) release();
           await barrier;

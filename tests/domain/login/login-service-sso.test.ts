@@ -49,10 +49,10 @@ const auth: AuthSnapshot = {
 };
 
 describe('LoginService.completeSsoLogin', () => {
-  it('разрешённый провайдер: выпускает рабочий код с userId и auth в сторе', async () => {
+  it('разрешённый провайдер: выпускает рабочий код с userId, auth и цепочкой SSO в сторе', async () => {
     const { login, codes } = make();
     const v = await login.validateRequest(req);
-    const code = await login.completeSsoLogin(v, 'user-42', auth);
+    const code = await login.completeSsoLogin(v, { userId: 'user-42', auth, chainId: 'chain-1' });
     expect(typeof code).toBe('string');
     expect(code.length).toBeGreaterThan(0);
     const grant = await codes.redeem({
@@ -63,13 +63,14 @@ describe('LoginService.completeSsoLogin', () => {
     });
     expect(grant.userId).toBe('user-42');
     expect(grant.auth).toEqual(auth);
+    expect(grant.ssoChainId).toBe('chain-1');
   });
 
   it('провайдер не в allowedProviders -> ProviderNotAllowedError', async () => {
     const { login } = make();
     const v = await login.validateRequest(req);
     await expect(
-      login.completeSsoLogin(v, 'user-42', { ...auth, provider: 'google' }),
+      login.completeSsoLogin(v, { userId: 'user-42', auth: { ...auth, provider: 'google' }, chainId: 'chain-1' }),
     ).rejects.toBeInstanceOf(ProviderNotAllowedError);
   });
 });

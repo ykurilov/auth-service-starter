@@ -1,7 +1,7 @@
-import { loadAppIdentity, loadModuleConfig, type LoadConfigOptions } from './core/config.js';
-import { readSession } from './core/session-cookie.js';
-import { parseCookies, SILENT_CHECK_PARAM, authCookieNames } from './cookies.js';
-import type { SessionUser } from './core/session-data.js';
+import { loadAppIdentity, loadModuleConfig, type LoadConfigOptions } from './core/config';
+import { readSession } from './core/session-cookie';
+import { parseCookies, SILENT_CHECK_PARAM, authCookieNames } from './cookies';
+import type { SessionUser } from './core/session-data';
 
 // Для серверных компонентов: только читаем cookie (middleware держит её свежей).
 // Ставить cookie в серверных компонентах Next.js нельзя — поэтому здесь без refresh.

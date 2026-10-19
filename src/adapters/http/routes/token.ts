@@ -86,8 +86,17 @@ export function registerToken(app: FastifyInstance, deps: HttpDeps): void {
           // Отказ по политике — без исключения: погашенный код фиксируется.
           if (!grantFitsClient(client, grant, b.redirect_uri)) return null;
           // Сессия запоминает SSO-цепочку браузера, через которую выдан код:
-          // смена аккаунта и выход в этом браузере её погасят.
-          const ssoChainId = await chainOfLogin(sso, grant.auth.loginId);
+          // смена аккаунта и выход в этом браузере её погасят. Код по SSO-сессии
+          // помнит цепочку сам, код входа — через свой loginId.
+          const ssoChainId = grant.ssoChainId ?? await chainOfLogin(sso, grant.auth.loginId);
+          // Блокировка цепочки — до конца транзакции, после блокировки клиента.
+          // Порядок блокировок во всём сервисе: строка клиента (ClientLock) →
+          // цепочки SSO (все сразу, lockChains) → строки sso_sessions и
+          // sessions; подробно — у SsoSessionService.signOut. Вход и выход
+          // берут только блокировки цепочек, изменение клиента — только
+          // блокировку клиента, и никто не ждёт блокировку клиента, держа
+          // блокировку цепочки: взаимной блокировки нет.
+          if (ssoChainId) await sso.lockChain(ssoChainId);
           const started = await sessions.start({
             userId: grant.userId,
             clientId: grant.clientId,
@@ -102,11 +111,12 @@ export function registerToken(app: FastifyInstance, deps: HttpDeps): void {
             nonce: grant.nonce,
             ...(ssoChainId ? { ssoChainId } : {}),
           });
-          // Цепочку перепроверяем после записи сессии, удерживая SSO-сессии
-          // пользователя в ней до конца транзакции. Выход или смена аккаунта
-          // в браузере либо дождутся транзакции и погасят новую сессию вместе
-          // с цепочкой, либо уже погасили цепочку — тогда гасим сессию здесь.
-          // Повторный вход того же пользователя цепочку не обрывает.
+          // Цепочку проверяем под её блокировкой, удерживая ещё и SSO-сессии
+          // пользователя в ней (FOR SHARE — на случай копии прежней версии
+          // во время раскатки, которая блокировку цепочки не берёт). Выход или
+          // смена аккаунта в браузере либо дождутся транзакции и погасят новую
+          // сессию вместе с цепочкой, либо уже погасили цепочку — тогда гасим
+          // сессию здесь. Повторный вход того же пользователя цепочку не обрывает.
           if (ssoChainId && !(await sso.holdSignedIn(ssoChainId, grant.userId))) {
             await sessions.revoke(started.sessionId);
             return null;
@@ -128,10 +138,20 @@ export function registerToken(app: FastifyInstance, deps: HttpDeps): void {
         // refresh и отзовёт сессию, либо refresh увидит уже новую политику.
         // Повтор погашенного токена отзывает сессию; отзыв фиксируется вместе
         // с транзакцией, поэтому ошибку бросаем уже после неё.
-        const outcome = await deps.clientLock.shared(session.clientId, async ({ client, sessions }) => {
+        // Сессия, выданная через SSO-цепочку браузера, не продлевается дальше
+        // срока, до которого браузер может найти цепочку (cookie привязки или
+        // SSO-cookie): иначе «Выйти» и смена аккаунта в нём её бы уже не
+        // достали. Ничего о цепочке не известно — считаем срок прошедшим.
+        // Сессия без цепочки (выдана до миграции 0013) не продлевается вовсе:
+        // её браузер не найти ни выходу, ни смене аккаунта, поэтому она живёт
+        // до своего срока, а дальше — новый вход, уже с цепочкой.
+        const outcome = await deps.clientLock.shared(session.clientId, async ({ client, sessions, sso }) => {
           if (!allowsProvider(client, session.provider)) return { error: new InvalidGrantError() };
+          const notAfter = session.ssoChainId
+            ? (await sso.browserDeadline(session.ssoChainId)) ?? new Date(0)
+            : session.expiresAt;
           try {
-            return { issued: await sessions.refresh(b.refresh_token, device(req)) };
+            return { issued: await sessions.refresh(b.refresh_token, device(req), undefined, notAfter) };
           } catch (err) {
             if (err instanceof RefreshTokenReuseError) return { error: err };
             throw err;

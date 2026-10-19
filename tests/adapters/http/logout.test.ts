@@ -69,10 +69,12 @@ async function getLogoutCsrf(
 }
 
 // Заводит device-сессию для того же пользователя, что и в активной SSO-сессии.
+// Сессия приложения, выданная через SSO-сессию браузера (как обмен кода).
 async function startDeviceSession(deps: TestDeps, sso: string, clientId: string): Promise<void> {
   const session = await deps.sso.resolve(sso);
   if (!session) throw new Error('нет активной SSO-сессии');
   await deps.sessions.start({
+    ssoChainId: session.chainId,
     userId: session.userId,
     clientId,
     provider: 'email',
@@ -176,7 +178,7 @@ describe('POST /logout', () => {
     await app.close();
   });
 
-  it('«Выйти во всех приложениях» отзывает сессии пользователя во всех клиентах', async () => {
+  it('«Выйти» отзывает сессии этого браузера во всех клиентах, а сессию пользователя на другом устройстве — нет', async () => {
     const other: Client = { id: 'other', type: 'internal', redirectUris: ['https://other.example/cb'], allowedProviders: ['email'] };
     const deps = await makeTestDeps({ clients: [LOGOUT_CLIENT, other] });
     const app = buildServer(deps);
@@ -184,7 +186,11 @@ describe('POST /logout', () => {
     await startDeviceSession(deps, sso, 'app');
     await startDeviceSession(deps, sso, 'other');
     const userId = (await deps.sso.resolve(sso))!.userId;
-    expect((await deps.sessions.listForUser(userId)).length).toBe(2);
+    const phone = await deps.sessions.start({
+      userId, clientId: 'app', provider: 'email', profile: { email: 'user@x.com' }, scope: 'openid',
+      device: { userAgent: 'phone', ip: '10.0.0.2' }, ssoChainId: 'phone-browser-chain',
+    });
+    expect((await deps.sessions.listForUser(userId)).length).toBe(3);
 
     const { csrfCookie, csrfField } = await getLogoutCsrf(app, { client_id: 'app' });
     const res = await app.inject({
@@ -198,7 +204,7 @@ describe('POST /logout', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(await deps.sessions.listForUser(userId)).toEqual([]);
+    expect((await deps.sessions.listForUser(userId)).map((s) => s.id)).toEqual([phone.sessionId]);
     expect(await deps.sso.resolve(sso)).toBeNull();
     await app.close();
   });

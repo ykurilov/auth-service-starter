@@ -1,5 +1,6 @@
 import type { Db } from '../../db/pool.js';
 import type {
+  ChallengeClient,
   LoginChallengeRecord,
   LoginChallengeStore,
 } from '../../../domain/email-login/login-challenge.js';
@@ -16,6 +17,8 @@ interface ChallengeRow {
   max_attempts: number;
   resends: number;
   max_resends: number;
+  last_slot: number;
+  code_slot: number;
   link_provider: string | null;
   link_subject: string | null;
   link_name: string | null;
@@ -27,7 +30,7 @@ interface ChallengeRow {
 const COLUMNS =
   'id, handle_hash, binding_hash, email, code_hash, attempts, max_attempts, resends, max_resends, ' +
   'link_provider, link_subject, link_name, created_at, expires_at, consumed_at, ' +
-  'client_id, client_registration_id';
+  'client_id, client_registration_id, last_slot, code_slot';
 
 // Postgres-реализация LoginChallengeStore. Ограничения попыток и переотправок
 // выражены в WHERE одиночного UPDATE ... RETURNING: Postgres берёт блокировку
@@ -49,6 +52,8 @@ export class PgLoginChallengeStore implements LoginChallengeStore {
       maxAttempts: Number(row.max_attempts),
       resends: Number(row.resends),
       maxResends: Number(row.max_resends),
+      lastSlot: Number(row.last_slot),
+      codeSlot: Number(row.code_slot),
       link:
         row.link_provider && row.link_subject
           ? {
@@ -66,12 +71,12 @@ export class PgLoginChallengeStore implements LoginChallengeStore {
   async create(r: LoginChallengeRecord): Promise<void> {
     await this.db.query(
       `insert into email_login_challenges (${COLUMNS})
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
       [
         r.id, r.handleHash, r.bindingHash, r.email, r.codeHash, r.attempts, r.maxAttempts,
         r.resends, r.maxResends, r.link?.provider ?? null, r.link?.subject ?? null,
         r.link?.name ?? null, r.createdAt, r.expiresAt, r.consumedAt,
-        r.clientId, r.clientRegistrationId,
+        r.clientId, r.clientRegistrationId, r.lastSlot, r.codeSlot,
       ],
     );
   }
@@ -81,6 +86,23 @@ export class PgLoginChallengeStore implements LoginChallengeStore {
       `select ${COLUMNS} from email_login_challenges
         where handle_hash = $1 and binding_hash = $2 and consumed_at is null and expires_at > $3`,
       [handleHash, bindingHash, now],
+    );
+    return rows[0] ? PgLoginChallengeStore.toRecord(rows[0]) : null;
+  }
+
+  async findLatestForBrowser(
+    bindingHash: string,
+    email: string,
+    client: ChallengeClient,
+    now: Date,
+  ): Promise<LoginChallengeRecord | null> {
+    const { rows } = await this.db.query<ChallengeRow>(
+      `select ${COLUMNS} from email_login_challenges
+        where binding_hash = $1 and email = $2 and client_id = $3
+          and (client_registration_id = $4::uuid or (client_registration_id is null and $4::uuid is null))
+          and consumed_at is null and expires_at > $5
+        order by created_at desc limit 1`,
+      [bindingHash, email, client.id, client.registrationId ?? null, now],
     );
     return rows[0] ? PgLoginChallengeStore.toRecord(rows[0]) : null;
   }
@@ -100,7 +122,7 @@ export class PgLoginChallengeStore implements LoginChallengeStore {
   async reserveResend(handleHash: string, bindingHash: string, now: Date): Promise<LoginChallengeRecord | null> {
     const { rows } = await this.db.query<ChallengeRow>(
       `update email_login_challenges
-          set resends = resends + 1
+          set resends = resends + 1, last_slot = last_slot + 1
         where handle_hash = $1 and binding_hash = $2 and consumed_at is null
           and expires_at > $3 and resends < max_resends and attempts < max_attempts
         returning ${COLUMNS}`,
@@ -109,11 +131,13 @@ export class PgLoginChallengeStore implements LoginChallengeStore {
     return rows[0] ? PgLoginChallengeStore.toRecord(rows[0]) : null;
   }
 
-  async replaceCode(id: string, codeHash: string, expiresAt: Date, now: Date): Promise<boolean> {
+  // Условие code_slot < $2 Postgres перепроверяет на свежей версии строки:
+  // из двух параллельных записей кода побеждает слот с бо́льшим номером.
+  async replaceCode(id: string, slot: number, codeHash: string, expiresAt: Date, now: Date): Promise<boolean> {
     const { rowCount } = await this.db.query(
-      `update email_login_challenges set code_hash = $2, expires_at = $3
-        where id = $1 and consumed_at is null and expires_at > $4 returning id`,
-      [id, codeHash, expiresAt, now],
+      `update email_login_challenges set code_hash = $3, code_slot = $2, expires_at = $4
+        where id = $1 and consumed_at is null and expires_at > $5 and code_slot < $2 returning id`,
+      [id, slot, codeHash, expiresAt, now],
     );
     return rowCount === 1;
   }

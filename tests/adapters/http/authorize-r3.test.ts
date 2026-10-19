@@ -106,18 +106,20 @@ async function renderNonce(app: App): Promise<string> {
 }
 
 describe('T06: лимит по адресу считает только новые попытки', () => {
-  it('дефолт по адресу поднят: не меньше 10 новых попыток в час', () => {
-    expect(DEFAULT_LIMITS.codeRequestPerEmail.limit).toBeGreaterThanOrEqual(10);
+  it('дефолт по адресу — короткая пауза между письмами, а не часовой отказ', () => {
+    expect(DEFAULT_LIMITS.codeRequestEmailPause.windowSeconds).toBeLessThanOrEqual(60);
   });
 
   it('посторонний исчерпал лимит адреса — переотправка в живой попытке владельца работает', async () => {
     const deps = await makeTestDeps({
       trustProxy: 1,
-      rateLimits: { codeRequestPerEmail: { limit: 2, windowSeconds: 3600 } },
+      rateLimits: { codeRequestPerEmailDaily: { limit: 2, windowSeconds: 86400 } },
     });
     const app = buildServer(deps);
     const owner = await startCodeLogin(app, 'owner@x.com', {}, fromIp('198.51.100.1'));
+    deps.clock.advance(60);
     expect((await identify(app, 'owner@x.com', fromIp('203.0.113.1'))).statusCode).toBe(200);
+    deps.clock.advance(60);
     expect((await identify(app, 'owner@x.com', fromIp('203.0.113.2'))).statusCode).toBe(429);
     const res = await resend(app, owner, fromIp('198.51.100.1'));
     expect(res.statusCode).toBe(200);
@@ -132,7 +134,10 @@ describe('T07: честный пользователь и понятная ст�
     const app = buildServer(deps);
     const first = await startCodeLogin(app, 'user@x.com');
     for (let i = 0; i < 3; i++) expect((await resend(app, first)).statusCode).toBe(200);
+    // Новое письмо на тот же адрес — после паузы между письмами.
+    deps.clock.advance(60);
     expect((await identify(app, 'user@x.com')).statusCode).toBe(200);
+    deps.clock.advance(60);
     expect((await identify(app, 'user@x.com')).statusCode).toBe(200);
     await app.close();
   });
@@ -179,12 +184,12 @@ describe('T07: честный пользователь и понятная ст�
 });
 
 describe('T08: переотправка меняет код только после успешной отправки', () => {
-  it('сбой отправки: прежний код работает, переотправка не списана', async () => {
+  it('отказ провайдера: прежний код работает, переотправка не списана', async () => {
     const deps = await makeTestDeps({ codeSequence: ['111111', '222222', '333333', '444444', '555555'] });
     const app = buildServer(deps);
     const challenge = await startCodeLogin(app, 'user@x.com');
     const send = deps.mailer.send.bind(deps.mailer);
-    deps.mailer.send = async () => { throw new MailDeliveryError('timeout'); };
+    deps.mailer.send = async () => { throw new MailDeliveryError('422', 'rejected'); };
     expect((await resend(app, challenge)).statusCode).toBe(503);
     deps.mailer.send = send;
     const view = await deps.codeProvider.describe({ handle: challenge, binding: TEST_CSRF });

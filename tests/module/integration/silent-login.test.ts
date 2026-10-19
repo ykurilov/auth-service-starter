@@ -60,7 +60,8 @@ async function loginInteractively(app: FastifyInstance, authorizeUrl: URL): Prom
     payload: new URLSearchParams({ ...form, challenge: extractChallenge(identifyRes.body), code: 'CODE55' }).toString(),
     headers,
   });
-  expect(verify.statusCode).toBe(302);
+  // internal — редирект с кодом, external — на экран согласия. Нужна только SSO-cookie.
+  expect([302, 303]).toContain(verify.statusCode);
   return injectSetCookie(verify, 'sso');
 }
 

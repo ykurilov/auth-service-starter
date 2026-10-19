@@ -430,10 +430,11 @@ describe.skipIf(!URL_ENV)('Postgres: Admin API клиентов против о�
 
   // Выход в браузере идёт одновременно с обменом кода, выданного через его
   // SSO-цепочку. pause — где обмен ждёт: сессия уже записана, но цепочка ещё
-  // не перепроверена; или цепочка проверена с блокировкой SSO-сессий.
+  // не перепроверена; или цепочка проверена с блокировкой SSO-сессий. В обоих
+  // случаях обмен держит блокировку цепочки, и выход ждёт конца его транзакции.
   for (const pause of [
-    { name: 'сессия записана, цепочка не перепроверена', sql: /^\s*insert into sessions/i, waitForLock: false },
-    { name: 'цепочка проверена под блокировкой', sql: /from sso_sessions[\s\S]*for share/i, waitForLock: true },
+    { name: 'сессия записана, цепочка не перепроверена', sql: /^\s*insert into sessions/i },
+    { name: 'цепочка проверена под блокировкой', sql: /from sso_sessions[\s\S]*for share/i },
   ]) {
     it(`P3-2: выход во время обмена кода не оставляет живой сессии (${pause.name})`, async () => {
       const events = conditions();
@@ -466,17 +467,11 @@ describe.skipIf(!URL_ENV)('Postgres: Admin API клиентов против о�
         await events.wait(() => paused || exchanged);
         // Отдельная копия сервиса выхода: без барьеров, на своих соединениях.
         const signOut = new SsoSessionService(pgSsoStores(db), systemClock, { ssoTtlSeconds: 3600 }).signOut(rawToken);
-        if (pause.waitForLock && paused) {
-          await until(async () => (await admin.query<{ n: string }>(
-            `select count(*) as n from pg_stat_activity where application_name = $1 and wait_event_type = 'Lock'`,
-            [appName])).rows[0]!.n !== '0' || released);
-          release();
-          await Promise.all([signOut, exchanging]);
-        } else {
-          await signOut;
-          release();
-          await exchanging;
-        }
+        await until(async () => (await admin.query<{ n: string }>(
+          `select count(*) as n from pg_stat_activity where application_name = $1 and wait_event_type = 'Lock'`,
+          [appName])).rows[0]!.n !== '0' || exchanged);
+        release();
+        await Promise.all([signOut, exchanging]);
         armed = false;
         expect(paused).toBe(true);
         const live = await db.query<{ n: string }>(

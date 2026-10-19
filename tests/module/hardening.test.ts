@@ -218,6 +218,9 @@ describe('выход', () => {
     const cookie = await session(60_000);
     const page = await handlers.GET(req('/api/auth/logout', cookie));
     expect(page.status).toBe(200); expect(fetch).not.toHaveBeenCalled();
+    // POST уводит на /logout сервиса: Chrome проверяет form-action и на редиректе.
+    expect(page.headers.get('content-security-policy'))
+      .toBe("frame-ancestors 'none'; form-action 'self' https://auth.test; base-uri 'none'");
     expect(page.headers.getSetCookie().some((c) => c.startsWith(`${SESSION_COOKIE}=`))).toBe(false);
     const csrf = (await page.text()).match(/name="csrf" value="([^"]+)"/)![1]!;
     const csrfCookie = page.headers.getSetCookie()[0]!.split(';')[0];

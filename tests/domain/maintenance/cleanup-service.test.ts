@@ -100,10 +100,25 @@ describe('CleanupService', () => {
     await sso.save(makeSsoSession({ id: 'sso-31d-ago', tokenHash: 'h-sso-31d', expiresAt: new Date(NOW.getTime() - 31 * DAY_MS) }));
     await sso.save(makeSsoSession({ id: 'sso-yesterday', tokenHash: 'h-sso-yesterday', expiresAt: new Date(NOW.getTime() - DAY_MS) }));
 
-    const service = new CleanupService(codes, emailSecrets, sessions, sso, clock);
+    // История ротаций живой сессии: пять токенов погашены двое суток назад,
+    // шестой — текущий. Остаются три последних; токен прежнего формата (без
+    // семейства) не трогаем.
+    const twoDaysAgo = new Date(NOW.getTime() - 2 * DAY_MS);
+    await refreshTokens.save({ id: 'legacy', sessionId: 'session-yesterday', tokenHash: 'h-legacy', previousTokenId: null,
+      replacedById: 'rt-1', createdAt: twoDaysAgo, consumedAt: twoDaysAgo });
+    for (let i = 1; i <= 6; i++) {
+      await refreshTokens.save({ id: `rt-${i}`, sessionId: 'session-yesterday', tokenHash: `h-rt-${i}`,
+        previousTokenId: null, replacedById: null, createdAt: new Date(twoDaysAgo.getTime() + i),
+        consumedAt: i < 6 ? new Date(twoDaysAgo.getTime() + i) : null, familyHash: 'family' });
+    }
+
+    const service = new CleanupService(codes, emailSecrets, sessions, refreshTokens, sso, clock);
     const counts = await service.runOnce();
 
-    expect(counts).toEqual({ codes: 1, emailSecrets: 1, sessions: 1, ssoSessions: 1, shortLived: 0 });
+    expect(counts).toEqual({ codes: 1, emailSecrets: 1, sessions: 1, refreshHistory: 3, ssoSessions: 1, shortLived: 0 });
+    for (const [id, kept] of [['legacy', true], ['rt-3', false], ['rt-4', true], ['rt-6', true]] as const) {
+      expect(await refreshTokens.findById(id) !== null).toBe(kept);
+    }
 
     // Коды/секреты: живые всё ещё находятся обычным поиском (значит не удалены);
     // истёкшие подтверждённо удалены физически — второй прогон deleteExpired

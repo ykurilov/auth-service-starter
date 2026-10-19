@@ -27,9 +27,11 @@ export function consentPage(input: ConsentPageInput): string {
   const email = escapeHtml(input.email);
   const csrf = escapeHtml(input.csrfToken);
   const origin = escapeHtml(appOrigin(input.params.redirect_uri));
+  // Название — идентификатор клиента, под которым его зарегистрировали.
+  const name = escapeHtml(input.params.client_id);
   const body =
     `<h1 class="h2">Вход в приложение</h1>` +
-    `<p>Приложение <strong>${origin}</strong> просит войти от вашего имени.</p>` +
+    `<p>Приложение <strong>${name}</strong> (<strong>${origin}</strong>) просит войти от вашего имени.</p>` +
     `<p>Вы вошли как <strong>${email}</strong>.</p>` +
     `<form method="post" action="/authorize/confirm">${hf}` +
     `<input type="hidden" name="csrf" value="${csrf}">` +

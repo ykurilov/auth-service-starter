@@ -6,7 +6,7 @@ import { makeTestDeps, TEST_CHALLENGE, TEST_VERIFIER } from './helpers.js';
 const start = (userId: string, clientId = 'app', provider = 'email') => ({
   userId, clientId, provider, profile: {}, scope: 'openid', device: { ip: '127.0.0.1' },
 });
-const params = (userId = 'user', clientType: ClientType = 'external') => ({
+const params = (userId = 'user', clientType: ClientType = 'internal') => ({
   userId, clientId: 'app', clientType, redirectUri: 'https://app.example/cb',
   codeChallenge: TEST_CHALLENGE, scope: 'openid', auth: { provider: 'email', emailVerified: true },
 });

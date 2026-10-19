@@ -84,7 +84,8 @@ describe.skipIf(!URL_ENV)('Postgres: цепочка SSO-сессий брауз�
     await sso.signOut(rawToken);
     expect(await sso.resolve(rawToken)).toBeNull();
     expect(await revoked(inChain)).toBe(true);
-    expect(await revoked(elsewhere)).toBe(true);
+    // Выход только в этом браузере: сессия того же пользователя без цепочки остаётся.
+    expect(await revoked(elsewhere)).toBe(false);
     // Ещё один повтор по уже отозванной cookie — без ошибок.
     await sso.signOut(rawToken);
   });
@@ -102,16 +103,17 @@ describe.skipIf(!URL_ENV)('Postgres: цепочка SSO-сессий брауз�
     expect(same.session.chainId).toBe(first.session.chainId);
     expect(await revoked(aliceHere)).toBe(false);
 
+    // Другой пользователь — новая цепочка, прежняя закрыта.
     const switched = await sso.start(bob, { provider: 'email', loginId: randomUUID() }, same.rawToken);
-    expect(switched.session.chainId).toBe(first.session.chainId);
+    expect(switched.session.chainId).not.toBe(first.session.chainId);
     expect(await revoked(aliceHere)).toBe(true);
     expect(await revoked(aliceThere)).toBe(false);
     expect(await sso.resolve(same.rawToken)).toBeNull();
     expect(await sso.resolve(switched.rawToken)).not.toBeNull();
     const store = pgSsoStores(db).sso;
     expect(await store.holdSignedIn(first.session.chainId, alice)).toBe(false);
-    expect(await store.holdSignedIn(first.session.chainId, bob)).toBe(true);
-    expect((await store.findLatestInChain(first.session.chainId))?.id).toBe(switched.session.id);
+    expect(await store.holdSignedIn(first.session.chainId, bob)).toBe(false);
+    expect(await store.holdSignedIn(switched.session.chainId, bob)).toBe(true);
   });
 });
 

@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
-import { createHonoAuth } from './auth/hono.js';
+import { createHonoAuth } from './auth/hono';
 
 // .env.local имеет приоритет; шаблон .env.example можно скопировать в .env.
 const envFile = existsSync('.env.local') ? '.env.local' : '.env';

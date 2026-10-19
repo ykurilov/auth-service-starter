@@ -43,6 +43,12 @@ const schema = z.object({
   // Писем с кодом с одного IP за час (новые попытки и переотправки на все
   // адреса). Класс или офис за одним адресом делят этот бюджет.
   CODE_REQUEST_PER_IP_HOURLY: z.coerce.number().int().positive().default(100),
+  // Неверных кодов с одного IP за час на все попытки и адреса. Верный код
+  // бюджет не тратит. По умолчанию равен CODE_REQUEST_PER_IP_HOURLY: группа,
+  // которой хватает писем, не упрётся и в проверки.
+  CODE_VERIFY_PER_IP_HOURLY: z.coerce.number().int().positive().optional(),
+  // Входов через Google с одного IP за 15 минут.
+  GOOGLE_SIGNIN_PER_IP_15MIN: z.coerce.number().int().positive().default(60),
   // Хвостовой слэш срезаем: адреса discovery строятся конкатенацией
   // `${issuer}/authorize`, и слэш в .env дал бы двойной слэш во всех путях.
   PUBLIC_ISSUER_URL: z
@@ -137,7 +143,7 @@ export interface RateLimits {
   googleNoncePerIp: RateLimitRule;
   codeRequest: RateLimitRule;
   codeRequestPerIp: RateLimitRule;
-  codeRequestPerEmail: RateLimitRule;
+  codeRequestEmailPause: RateLimitRule;
   codeRequestPerEmailDaily: RateLimitRule;
   codeVerifyPerIp: RateLimitRule;
   token: RateLimitRule;
@@ -203,7 +209,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     googleClientId: p.GOOGLE_CLIENT_ID,
     rateLimits: {
       // Лимит POST /authorize/google по IP: просторный для общих IP (офис, кафе).
-      identifyPerIp: { limit: 60, windowSeconds: 900 },
+      identifyPerIp: { limit: p.GOOGLE_SIGNIN_PER_IP_15MIN, windowSeconds: 900 },
       // Выпуск Google nonce при показе страницы входа (в т.ч. страниц ошибок):
       // отдельный счётчик, чтобы просмотры страниц не тратили бюджет входа.
       googleNoncePerIp: { limit: 300, windowSeconds: 900 },
@@ -211,19 +217,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       // По ip — общий бюджет писем одного источника на все адреса: новые
       // попытки и переотправки (настраивается CODE_REQUEST_PER_IP_HOURLY).
       // Остальные три считают только НОВЫЕ попытки входа: переотправка в живой
-      // попытке ограничена самой попыткой (3 раза), и посторонний, исчерпавший
-      // лимит адреса, не мешает владельцу дослать код в уже начатый вход.
-      // По (ip+email) — против одного источника; по email за час и за сутки —
-      // бюджет адреса против ротации IP. Каждая попытка — не больше 4 писем и
-      // 5 проверок: на один адрес за сутки не больше 20×4 писем и 20×5 догадок.
+      // попытке ограничена самой попыткой (3 раза).
+      // По (ip+email) — против одного источника. По email — бюджет адреса
+      // против ротации IP: пауза 60 с между новыми письмами и суточный потолок.
+      // Посторонний, знающий адрес, может занять этот бюджет: владелец тогда
+      // ждёт паузу (секунды), а при исчерпанном потолке — до конца суток. Уже
+      // начатый вход владельца это не задевает: переотправка бюджет адреса не
+      // тратит. Это осознанная цена защиты ящика от бомбинга (docs/DEPLOY.md).
+      // Каждая попытка — не больше 4 писем и 5 проверок: на один адрес за сутки
+      // не больше 20×4 писем и 20×5 догадок.
       codeRequest: { limit: 5, windowSeconds: 900 },
       codeRequestPerIp: { limit: p.CODE_REQUEST_PER_IP_HOURLY, windowSeconds: 3600 },
-      codeRequestPerEmail: { limit: 10, windowSeconds: 3600 },
+      codeRequestEmailPause: { limit: 1, windowSeconds: 60 },
       codeRequestPerEmailDaily: { limit: 20, windowSeconds: 86400 },
-      // Проверка кода: общий бюджет одного IP на все попытки и адреса. Лимит
-      // по адресу намеренно не вводим: им посторонний заблокировал бы владельца
-      // — у каждой попытки свой лимит проверок (5) в самой записи.
-      codeVerifyPerIp: { limit: 30, windowSeconds: 900 },
+      // Проверка кода: общий бюджет неверных кодов одного IP на все попытки и
+      // адреса (верный код списание возвращает). Лимит по адресу намеренно не
+      // вводим: им посторонний заблокировал бы владельца — у каждой попытки
+      // свой лимит проверок (5) в самой записи.
+      codeVerifyPerIp: {
+        limit: p.CODE_VERIFY_PER_IP_HOURLY ?? p.CODE_REQUEST_PER_IP_HOURLY,
+        windowSeconds: 3600,
+      },
       token: { limit: p.TOKEN_RATE_LIMIT, windowSeconds: 900 },
       revoke: { limit: 60, windowSeconds: 900 },
     },

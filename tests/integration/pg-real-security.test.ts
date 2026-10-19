@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -12,8 +12,10 @@ import { IdentityService, EmailOwnershipRequiredError } from '../../src/domain/i
 import { EmailCodeProvider } from '../../src/domain/email-login/email-code-provider.js';
 import { GoogleNonceService } from '../../src/domain/google-login/google-nonce.js';
 import { FakeMailer } from '../../src/adapters/mail/fake-mailer.js';
-import { MailDeliveryError } from '../../src/ports/mailer.js';
+import { MailDeliveryError, type OutgoingEmail } from '../../src/ports/mailer.js';
+import { InvalidCredentialsError, UnconfirmedCodeDeliveryError } from '../../src/domain/email-login/errors.js';
 import { systemClock } from '../../src/ports/clock.js';
+import { sha256Hex as sha256Of } from '../../src/domain/shared/hash.js';
 import type { ProviderIdentity } from '../../src/domain/identity/provider-identity.js';
 
 // Клиент, под которым начинается и проверяется попытка входа.
@@ -216,11 +218,123 @@ describe.skipIf(!URL_ENV)('Postgres: атомарность входа, OTP, non
     });
     const { handle } = await provider.start({ email: 'rollback@example.com', binding: 'br', client: TEST_CLIENT });
     const send = mailer.send.bind(mailer);
-    mailer.send = async () => { throw new MailDeliveryError('timeout'); };
+    mailer.send = async () => { throw new MailDeliveryError('422', 'rejected'); };
     await expect(provider.resend({ handle, binding: 'br', client: TEST_CLIENT })).rejects.toBeInstanceOf(MailDeliveryError);
     mailer.send = send;
     expect(await provider.describe({ handle, binding: 'br' })).toMatchObject({ resendsLeft: 3 });
     await expect(provider.verify({ handle, binding: 'br', client: TEST_CLIENT, code: '311111' })).resolves.toBeTruthy();
+  });
+
+  // Письмо уходит только по команде теста: барьер, задающий порядок ответов
+  // провайдера на параллельные переотправки с двух экземпляров.
+  function heldMailer() {
+    const held: { email: OutgoingEmail; deliver: () => void; fail: (err: Error) => void }[] = [];
+    const mailer = new FakeMailer();
+    mailer.send = (email) =>
+      new Promise<void>((resolve, reject) => {
+        held.push({ email, deliver: () => { mailer.sent.push(email); resolve(); }, fail: reject });
+      });
+    return { mailer, held };
+  }
+  const codeOf = (email: OutgoingEmail) => /\d{6}/.exec(email.text)![0];
+
+  it('R4-A1: таймауты переотправки на Postgres — слот потрачен, действует код последнего письма', async () => {
+    const mailer = new FakeMailer();
+    let n = 0;
+    const instance = (db: Db) =>
+      new EmailCodeProvider(new PgLoginChallengeStore(db), mailer, systemClock, {
+        appName: 'G', codeTtlMinutes: 15, generateCode: () => String(410000 + n++),
+      });
+    const { handle } = await instance(a).start({ email: 'timeout@example.com', binding: 'br', client: TEST_CLIENT });
+    const send = mailer.send.bind(mailer);
+    mailer.send = async (email) => { await send(email); throw new MailDeliveryError('timeout'); };
+    for (let i = 0; i < 6; i++) {
+      const r = await instance(i % 2 ? a : b).resend({ handle, binding: 'br', client: TEST_CLIENT }).catch((e: unknown) => e);
+      if (i < 3) expect(r).toBeInstanceOf(UnconfirmedCodeDeliveryError);
+      else expect(r).toBeNull();
+    }
+    expect(mailer.sent).toHaveLength(1 + 3);
+    const last = codeOf(mailer.sent[3]!);
+    await expect(instance(a).verify({ handle, binding: 'br', client: TEST_CLIENT, code: codeOf(mailer.sent[2]!) }))
+      .rejects.toBeInstanceOf(InvalidCredentialsError);
+    await expect(instance(b).verify({ handle, binding: 'br', client: TEST_CLIENT, code: last })).resolves.toBeTruthy();
+  });
+
+  it('R4-A2: две переотправки с двух экземпляров — опоздавшее письмо раннего слота не затирает новый код', async () => {
+    const { mailer, held } = heldMailer();
+    let n = 0;
+    const instance = (db: Db) =>
+      new EmailCodeProvider(new PgLoginChallengeStore(db), mailer, systemClock, {
+        appName: 'G', codeTtlMinutes: 15, generateCode: () => String(420000 + n++),
+      });
+    const start = instance(a).start({ email: 'race@example.com', binding: 'br', client: TEST_CLIENT });
+    await vi.waitFor(() => expect(held).toHaveLength(1));
+    held[0]!.deliver();
+    const { handle } = await start;
+    const first = instance(a).resend({ handle, binding: 'br', client: TEST_CLIENT });
+    await vi.waitFor(() => expect(held).toHaveLength(2));
+    const second = instance(b).resend({ handle, binding: 'br', client: TEST_CLIENT });
+    await vi.waitFor(() => expect(held).toHaveLength(3));
+    held[2]!.deliver();
+    expect(await second).toEqual({ email: 'race@example.com' });
+    held[1]!.deliver();
+    expect(await first).toEqual({ email: 'race@example.com' });
+    await expect(instance(a).verify({ handle, binding: 'br', client: TEST_CLIENT, code: codeOf(held[1]!.email) }))
+      .rejects.toBeInstanceOf(InvalidCredentialsError);
+    await expect(instance(b).verify({ handle, binding: 'br', client: TEST_CLIENT, code: codeOf(held[2]!.email) }))
+      .resolves.toBeTruthy();
+  });
+
+  it('R4-A2: одновременная запись кодов двух слотов — побеждает более новый слот', async () => {
+    // Обе записи кода стартуют, пока строка заблокирована третьей транзакцией:
+    // Postgres перепроверяет условие слота на свежей версии строки.
+    const provider = new EmailCodeProvider(new PgLoginChallengeStore(a), new FakeMailer(), systemClock, {
+      appName: 'G', codeTtlMinutes: 15, generateCode: () => '430000',
+    });
+    const { handle } = await provider.start({ email: 'locked@example.com', binding: 'br', client: TEST_CLIENT });
+    const storeA = new PgLoginChallengeStore(a);
+    const storeB = new PgLoginChallengeStore(b);
+    const one = await storeA.reserveResend(sha256Of(`challenge:${handle}`), sha256Of('binding:br'), new Date());
+    const two = await storeB.reserveResend(sha256Of(`challenge:${handle}`), sha256Of('binding:br'), new Date());
+    expect([one!.lastSlot, two!.lastSlot]).toEqual([1, 2]);
+    const locker = createPool(withSearchPath(URL_ENV!, schema));
+    try {
+      await locker.query('begin');
+      await locker.query('select id from email_login_challenges where id = $1 for update', [one!.id]);
+      const expires = new Date(Date.now() + 15 * 60_000);
+      const waiting = () => count(
+        `select count(*) as n from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+            and query like 'update email_login_challenges set code_hash%'`,
+      );
+      // Очередь на блокировку: сначала запись слота 2, за ней слота 1.
+      const newer = storeB.replaceCode(two!.id, 2, 'hash-slot-2', expires, new Date());
+      await vi.waitFor(async () => expect(await waiting()).toBe(1));
+      const older = storeA.replaceCode(one!.id, 1, 'hash-slot-1', expires, new Date());
+      await vi.waitFor(async () => expect(await waiting()).toBe(2));
+      await locker.query('commit');
+      expect(await newer).toBe(true);
+      expect(await older).toBe(false);
+    } finally {
+      await locker.close();
+    }
+    const { rows } = await a.query<{ code_hash: string; code_slot: number }>(
+      'select code_hash, code_slot from email_login_challenges where email = $1', ['locked@example.com']);
+    expect(rows[0]).toEqual({ code_hash: 'hash-slot-2', code_slot: 2 });
+  });
+
+  it('R5-B1: resume на Postgres — попытка браузера находится другим экземпляром по адресу и регистрации', async () => {
+    const mk = (db: Db) => new EmailCodeProvider(new PgLoginChallengeStore(db), new FakeMailer(), systemClock, {
+      appName: 'Auth Service', codeTtlMinutes: 15, generateCode: () => '515151',
+    });
+    const started = await mk(a).start({ email: 'resume@example.com', binding: 'br-resume', client: TEST_CLIENT });
+    await mk(a).start({ email: 'resume@example.com', binding: 'br-resume', client: { id: 'app' } });
+    expect(await mk(b).resume({ email: 'resume@example.com', binding: 'br-resume', client: TEST_CLIENT })).toEqual(started);
+    expect((await mk(b).resume({ email: 'resume@example.com', binding: 'br-resume', client: { id: 'app' } }))?.handle)
+      .not.toBe(started.handle);
+    expect(await mk(b).resume({ email: 'resume@example.com', binding: 'br-other', client: TEST_CLIENT })).toBeNull();
+    await mk(b).verify({ handle: started.handle, binding: 'br-resume', client: TEST_CLIENT, code: '515151' });
+    expect(await mk(a).resume({ email: 'resume@example.com', binding: 'br-resume', client: TEST_CLIENT })).toBeNull();
   });
 
   it('F14: параллельное гашение одного nonce с двух экземпляров → ровно одно успешное', async () => {

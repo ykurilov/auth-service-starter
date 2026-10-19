@@ -63,11 +63,12 @@ export class ResendMailer implements Mailer {
       clearTimeout(timer);
     }
     if (result.error) {
+      const reason = withoutEmailAddresses(result.error.message);
       this.logger.error(
-        { provider: 'resend', ...emailLogFields(email), error: result.error.message, name: result.error.name },
+        { provider: 'resend', ...emailLogFields(email), error: reason, name: result.error.name },
         'ошибка отправки письма',
       );
-      throw new MailDeliveryError(`Resend send failed: ${result.error.message}`, 'rejected');
+      throw new MailDeliveryError(`Resend send failed: ${reason}`, 'rejected');
     }
     this.logger.info(
       { provider: 'resend', emailId: result.data?.id, ...emailLogFields(email) },
@@ -89,4 +90,10 @@ export function createResendMailer(opts: {
     from,
     opts.logger,
   );
+}
+
+// Провайдер вписывает адреса в текст отказа («only send testing emails to
+// owner@…»). Смысл отказа нужен для разбора, адреса в журнал попадать не должны.
+function withoutEmailAddresses(message: string): string {
+  return message.replace(/[^\s<>()"',;:]+@[^\s<>()"',;:]+/g, '[адрес]');
 }

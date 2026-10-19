@@ -14,12 +14,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "typecheck:module": "tsc -p module/tsconfig.json --noEmit",
+    "typecheck:module": "tsc -p module/tsconfig.json --noEmit && tsc -p tests/module/tsconfig.json --noEmit",
     "start": "node --env-file-if-exists=.env dist/src/index.js",
     "setup": "node scripts/setup.mjs",
     "client": "node --env-file-if-exists=.env scripts/client.mjs",
     "check": "npm run typecheck && npm run typecheck:module && npm test && npm run build",
-    "sync-examples": "node scripts/sync-examples.mjs"
+    "sync-examples": "node scripts/sync-examples.mjs",
+    "test:browser": "vitest run --config vitest.browser.config.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^10.0.1",
@@ -39,6 +40,7 @@
     "@types/pg": "^8.20.0",
     "hono": "^4.13.13",
     "pg-mem": "^3.0.14",
+    "playwright": "^1.64.1",
     "typescript": "^5.6.3",
     "vitest": "^5.0.4"
   },

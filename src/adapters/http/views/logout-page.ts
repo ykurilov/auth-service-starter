@@ -14,7 +14,7 @@ export function logoutConfirmPage(input: LogoutConfirmPageInput): string {
       : `<input type="hidden" name="post_logout_redirect_uri" value="${escapeHtml(input.postLogoutRedirectUri)}">`;
   const body =
     `<h1 class="h2">Выход</h1>` +
-    `<p>Выйти из аккаунта во всех приложениях?</p>` +
+    `<p>Выйти из аккаунта во всех приложениях в этом браузере? В других браузерах и на других устройствах вход сохранится.</p>` +
     `<form method="post" action="/logout">` +
     `<input type="hidden" name="client_id" value="${escapeHtml(input.clientId)}">` +
     redirectField +

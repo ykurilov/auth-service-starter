@@ -23,6 +23,8 @@ export interface IssueParams {
   scope: string;
   nonce?: string;
   auth: AuthSnapshot;
+  // Цепочка SSO браузера, если код выдан по SSO-сессии.
+  ssoChainId?: string;
 }
 
 export interface RedeemParams {
@@ -54,6 +56,7 @@ export class AuthorizationCodeService {
       scope: params.scope,
       nonce: params.nonce,
       auth: params.auth,
+      ...(params.ssoChainId ? { ssoChainId: params.ssoChainId } : {}),
       expiresAt: new Date(now.getTime() + this.ttlSeconds * 1000),
       consumedAt: null,
     });
@@ -95,5 +98,6 @@ function toGrant(record: AuthorizationCodeRecord): AuthorizationGrant {
     scope: record.scope,
     nonce: record.nonce,
     auth: record.auth,
+    ...(record.ssoChainId ? { ssoChainId: record.ssoChainId } : {}),
   };
 }

@@ -1,14 +1,17 @@
 import type { ClientWriteStore } from '../../domain/clients/client.js';
 import type { ClientLock, ClientScope, ClientWriteScope } from '../../domain/clients/client-lock.js';
+import type { InMemorySsoSessionStore } from './in-memory-sso-session-store.js';
 
 // Блокировка клиента для режима без БД (один процесс): операции над одним
 // клиентом идут строго по очереди, общие и исключительные — одинаково.
+// Работа под блокировкой — одна транзакция SSO-хранилища: блокировка цепочки,
+// взятая внутри (обмен кода), держится до её конца.
 export class InMemoryClientLock implements ClientLock {
   private readonly queues = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly registry: ClientWriteStore,
-    private readonly services: Pick<ClientScope, 'codes' | 'sessions' | 'sso'>,
+    private readonly services: Pick<ClientScope, 'codes' | 'sessions'> & { sso: InMemorySsoSessionStore },
     private readonly invalidateCodes: (clientId: string) => Promise<void>,
   ) {}
 
@@ -17,13 +20,14 @@ export class InMemoryClientLock implements ClientLock {
   }
 
   exclusive<T>(clientId: string, fn: (scope: ClientWriteScope) => Promise<T>): Promise<T> {
-    const run = async (): Promise<T> =>
-      fn({
-        client: await this.registry.findClient(clientId),
-        registry: this.registry,
-        ...this.services,
-        invalidateCodes: () => this.invalidateCodes(clientId),
-      });
+    const run = (): Promise<T> =>
+      this.services.sso.transaction(async () =>
+        fn({
+          client: await this.registry.findClient(clientId),
+          registry: this.registry,
+          ...this.services,
+          invalidateCodes: () => this.invalidateCodes(clientId),
+        }));
     const result = (this.queues.get(clientId) ?? Promise.resolve()).then(run, run);
     const tail = result.catch(() => undefined);
     this.queues.set(clientId, tail);

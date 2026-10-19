@@ -5,7 +5,7 @@ import { sha256Hex } from '../shared/hash.js';
 import { normalizeScope } from '../tokens/scope.js';
 import type { Session, SessionProfile, SessionStore } from './session.js';
 import type { RefreshTokenRecord, RefreshTokenStore } from './refresh-token.js';
-import { deriveRefreshToken, generateRefreshToken } from './refresh-token.js';
+import { deriveRefreshToken, generateRefreshFamily, generateRefreshToken, refreshFamilyOf } from './refresh-token.js';
 import type { DeviceInfo } from './device.js';
 import { fingerprintDevice, hashIp } from './device.js';
 import { InvalidRefreshTokenError, RefreshTokenReuseError } from './errors.js';
@@ -77,7 +77,8 @@ export class SessionService {
     };
     await this.sessions.save(session);
 
-    const raw = generateRefreshToken();
+    const family = generateRefreshFamily();
+    const raw = `${family}.${generateRefreshToken()}`;
     await this.refreshTokens.save({
       id: randomUUID(),
       sessionId: session.id,
@@ -86,6 +87,7 @@ export class SessionService {
       replacedById: null,
       createdAt: now,
       consumedAt: null,
+      familyHash: sha256Hex(family),
     });
 
     const core = await this.issueFor(session, params.roles, params.nonce);
@@ -94,9 +96,21 @@ export class SessionService {
 
   // Possession of a real secret supplies the trusted session/rate-limit key.
   async resolveRefreshSession(rawToken: string): Promise<Session> {
+    const found = await this.lookup(rawToken);
+    if (!found) throw new InvalidRefreshTokenError();
+    return this.activeSession(found.sessionId);
+  }
+
+  // Запись токена, а если её строку уже удалила очистка истории — сессия по
+  // семейству токена (record: null). Очистка удаляет только токены, погашенные
+  // давно (см. REFRESH_HISTORY_RETENTION_MS), поэтому такой токен — повтор
+  // погашенного старше окна grace.
+  private async lookup(rawToken: string): Promise<{ sessionId: string; record: RefreshTokenRecord | null } | null> {
     const record = await this.refreshTokens.findByHash(sha256Hex(rawToken));
-    if (!record) throw new InvalidRefreshTokenError();
-    return this.activeSession(record.sessionId);
+    if (record) return { sessionId: record.sessionId, record };
+    const family = refreshFamilyOf(rawToken);
+    const sessionId = family ? await this.refreshTokens.findSessionIdByFamily(sha256Hex(family)) : null;
+    return sessionId ? { sessionId, record: null } : null;
   }
 
   private async activeSession(id: string): Promise<Session> {
@@ -107,11 +121,20 @@ export class SessionService {
     return session;
   }
 
-  async refresh(rawToken: string, device: DeviceInfo, roles?: string[]): Promise<IssuedTokens> {
+  // notAfter — дальше какого момента сессию не продлевать (срок, до которого
+  // браузер её SSO-цепочки может её найти для выхода). Прошёл — refresh
+  // отклоняется, как у истёкшей сессии.
+  async refresh(rawToken: string, device: DeviceInfo, roles?: string[], notAfter?: Date): Promise<IssuedTokens> {
     const now = this.clock.now();
-    let record = await this.refreshTokens.findByHash(sha256Hex(rawToken));
-    if (!record) throw new InvalidRefreshTokenError();
-    const session = await this.activeSession(record.sessionId);
+    const found = await this.lookup(rawToken);
+    if (!found) throw new InvalidRefreshTokenError();
+    const session = await this.activeSession(found.sessionId);
+    if (notAfter && notAfter.getTime() <= now.getTime()) throw new InvalidRefreshTokenError();
+    if (!found.record) {
+      await this.sessions.revoke(session.id, now);
+      throw new RefreshTokenReuseError();
+    }
+    let record: RefreshTokenRecord | null = found.record;
 
     if (record.consumedAt === null) {
       const newId = randomUUID();
@@ -119,10 +142,12 @@ export class SessionService {
       const won = await this.refreshTokens.rotate(record.id, {
         id: newId, sessionId: session.id, tokenHash: sha256Hex(raw),
         previousTokenId: record.id, replacedById: null, createdAt: now,
-        consumedAt: null, derivationVersion: 'hmac-sha256-v1',
+        consumedAt: null, derivationVersion: 'hmac-sha256-v2', familyHash: sha256Hex(refreshFamilyOf(raw)!),
       }, now);
       if (won) {
-        await this.sessions.touch(session.id, now, this.slideExpiry(now), {
+        const slid = this.slideExpiry(now);
+        const expiresAt = notAfter && notAfter.getTime() < slid.getTime() ? notAfter : slid;
+        await this.sessions.touch(session.id, now, expiresAt, {
           fingerprint: fingerprintDevice(device), ipHash: hashIp(device.ip),
         });
         await this.activeSession(session.id);
@@ -146,12 +171,12 @@ export class SessionService {
       const successor: RefreshTokenRecord | null = record.replacedById
         ? await this.refreshTokens.findById(record.replacedById) : null;
       if (!successor || successor.sessionId !== session.id || successor.previousTokenId !== record.id ||
-          successor.derivationVersion !== 'hmac-sha256-v1') {
+          !successor.derivationVersion) {
         // A random legacy successor cannot be reconstructed. During grace
         // reject the retry without revoking its still valid current session.
         throw new InvalidRefreshTokenError();
       }
-      raw = deriveRefreshToken(raw, successor.id);
+      raw = deriveRefreshToken(raw, successor.id, successor.derivationVersion);
       if (sha256Hex(raw) !== successor.tokenHash) throw new InvalidRefreshTokenError();
       if (successor.consumedAt === null) {
         await this.activeSession(session.id);
@@ -170,17 +195,19 @@ export class SessionService {
   // ошибка (иначе эндпоинт стал бы оракулом существования токенов).
   // consumedAt намеренно не проверяем: любой исторический токен цепочки ротации
   // тоже гасит сессию — клиент, потерявший актуальную голову, всё равно выйдет.
+  // В том числе токен, чью строку уже удалила очистка: его находит семейство.
   async revokeByRefreshToken(rawToken: string): Promise<void> {
-    const record = await this.refreshTokens.findByHash(sha256Hex(rawToken));
-    if (!record) return;
-    await this.sessions.revoke(record.sessionId, this.clock.now());
+    const found = await this.lookup(rawToken);
+    if (!found) return;
+    await this.sessions.revoke(found.sessionId, this.clock.now());
   }
 
   async revokeForClient(clientId: string, allowedProviders: string[] = []): Promise<void> {
     await this.sessions.revokeForClient(clientId, this.clock.now(), allowedProviders);
   }
 
-  // Выход во всех приложениях: гасим живые сессии пользователя во всех клиентах.
+  // Отзыв всех живых сессий пользователя во всех клиентах и браузерах.
+  // «Выйти» им не пользуется: он гасит только цепочку своего браузера.
   async revokeAllForUser(userId: string): Promise<void> {
     await this.sessions.revokeForUser(userId, this.clock.now());
   }

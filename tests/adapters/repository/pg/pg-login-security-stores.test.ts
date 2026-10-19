@@ -108,6 +108,18 @@ describe('PgLoginChallengeStore через EmailCodeProvider', () => {
     expect((await codeInstance().provider.verifyChallenge({ handle, binding: 'b', client: TEST_CLIENT, code: '424242' })).link).toEqual(link);
   });
 
+  it('resume: другой экземпляр находит живую попытку браузера на адрес у этой регистрации', async () => {
+    const { handle } = await codeInstance().provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
+    clock.advance(1);
+    await codeInstance().provider.start({ email: 'u@x.com', binding: 'b', client: { id: 'app' } });
+    await codeInstance().provider.start({ email: 'u@x.com', binding: 'other', client: TEST_CLIENT });
+    const resumed = await codeInstance().provider.resume({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
+    expect(resumed).toEqual({ handle, email: 'u@x.com' });
+    expect((await codeInstance().provider.resume({ email: 'u@x.com', binding: 'b', client: { id: 'app' } }))?.handle).not.toBe(handle);
+    await codeInstance().provider.verify({ handle, binding: 'b', client: TEST_CLIENT, code: '424242' });
+    expect(await codeInstance().provider.resume({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT })).toBeNull();
+  });
+
   it('deleteExpired удаляет истёкшие попытки', async () => {
     await codeInstance().provider.start({ email: 'u@x.com', binding: 'b', client: TEST_CLIENT });
     expect(await new PgLoginChallengeStore(db).deleteExpired(new Date(clock.now().getTime() + 16 * 60_000))).toBe(1);

@@ -37,9 +37,12 @@ export interface SessionStore {
   revokeForClient(clientId: string, at: Date, allowedProviders?: string[]): Promise<void>;
   // Отзывает все живые сессии пользователя во всех клиентах.
   revokeForUser(userId: string, at: Date): Promise<void>;
-  // Отзывает живые сессии, выданные через SSO-цепочку браузера, а с userId —
-  // ещё и все живые сессии этого пользователя. Одним изменением.
-  revokeForSsoChain(chainId: string, at: Date, userId?: string): Promise<void>;
+  // Отзывает живые сессии, выданные через SSO-цепочку браузера. Сессии того
+  // же пользователя в других браузерах не трогает.
+  revokeForSsoChain(chainId: string, at: Date): Promise<void>;
+  // Отзывает живые сессии, выданные через SSO-цепочку браузера другим
+  // пользователям, кроме keepUserId: в браузере вошёл keepUserId.
+  revokeOthersInSsoChain(chainId: string, keepUserId: string, at: Date): Promise<void>;
   // Живые (не отозванные и не истёкшие на момент now) сессии пользователя.
   findActiveByUser(userId: string, now: Date): Promise<Session[]>;
   // Удаляет сессии с expires_at < before ИЛИ (отозвана И revoked_at < before).

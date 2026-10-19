@@ -1,8 +1,8 @@
-import { loadModuleConfig, type LoadConfigOptions } from './config.js';
-import { OidcClient, OidcError } from './oidc-client.js';
-import { buildSessionData, type SessionData } from './session-data.js';
-import { readSession, sessionCookie } from './session-cookie.js';
-import { authCookieNames, parseCookies, clearCookie, isSecureAppUrl } from '../cookies.js';
+import { loadModuleConfig, type LoadConfigOptions } from './config';
+import { OidcClient, OidcError } from './oidc-client';
+import { buildSessionData, type SessionData } from './session-data';
+import { readSession, sessionCookie } from './session-cookie';
+import { authCookieNames, parseCookies, clearCookie, isSecureAppUrl } from '../cookies';
 
 export type SessionResult =
   | { kind: 'active'; data: SessionData; setCookies: string[] }

@@ -1,4 +1,4 @@
-import type { ModuleConfig } from './config.js';
+import type { ModuleConfig } from './config';
 
 // Фиксированный путь callback — должен совпадать с деривацией redirect_uri на
 // стороне сервиса (Admin API строит именно /api/auth/callback).

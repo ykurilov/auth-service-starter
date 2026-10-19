@@ -4,7 +4,7 @@ import type { HttpDeps } from '../deps.js';
 import { errorPage } from '../views/error-page.js';
 import { logoutConfirmPage, loggedOutPage } from '../views/logout-page.js';
 import { html } from './authorize.js';
-import { readSsoCookie, clearSsoCookie } from '../cookies.js';
+import { readSsoCookie, clearSsoCookie, readBindingCookie, clearBindingCookie } from '../cookies.js';
 import { ensureCsrf, isSameOriginRequest, verifyCsrf } from '../csrf.js';
 
 const querySchema = z.object({
@@ -59,13 +59,18 @@ export function registerLogout(app: FastifyInstance, deps: HttpDeps): void {
     if (!client)
       return html(reply, 400, errorPage('Некорректный запрос', 'Неизвестное приложение'));
 
-    // Экран обещает выход во всех приложениях: гасим SSO-цепочку браузера,
-    // сессии приложений, выданные через неё, и сессии пользователя во всех
-    // клиентах, а не только в том, откуда пришёл выход. Cookie стираем только
-    // после успешного отзыва: повторный выход после сбоя его доделает.
+    // Экран обещает выход во всех приложениях этого браузера: гасим его
+    // SSO-цепочку и сессии приложений, выданные через неё, а не только сессию
+    // приложения, откуда пришёл выход. Другие браузеры и устройства
+    // пользователя не трогаем. SSO-cookie могла уже истечь раньше сессий
+    // приложений — тогда цепочку находит cookie привязки браузера. Cookie
+    // стираем только после успешного отзыва: повторный выход после сбоя его
+    // доделает.
     const token = readSsoCookie(req, deps.config);
-    if (token) await deps.sso.signOut(token);
+    const binding = readBindingCookie(req, deps.config);
+    if (token || binding) await deps.sso.signOut(token, binding);
     clearSsoCookie(reply, deps.config);
+    clearBindingCookie(reply, deps.config);
 
     const target = allowedPostLogout(
       parsed.data.post_logout_redirect_uri,

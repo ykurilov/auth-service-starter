@@ -118,11 +118,18 @@ export class PgSessionStore implements SessionStore {
     );
   }
 
-  async revokeForSsoChain(chainId: string, at: Date, userId?: string): Promise<void> {
+  async revokeForSsoChain(chainId: string, at: Date): Promise<void> {
     await this.db.query(
-      `update sessions set revoked_at = $2
-        where revoked_at is null and (sso_chain_id = $1 or user_id = $3)`,
-      [chainId, at, userId ?? null],
+      'update sessions set revoked_at = $2 where revoked_at is null and sso_chain_id = $1',
+      [chainId, at],
+    );
+  }
+
+  async revokeOthersInSsoChain(chainId: string, keepUserId: string, at: Date): Promise<void> {
+    await this.db.query(
+      `update sessions set revoked_at = $3
+        where revoked_at is null and sso_chain_id = $1 and user_id <> $2`,
+      [chainId, keepUserId, at],
     );
   }
 

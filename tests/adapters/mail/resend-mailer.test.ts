@@ -113,3 +113,33 @@ describe('ResendMailer: таймаут отправки (R15)', () => {
     expect((err as MailDeliveryError).outcome).toBe('unconfirmed');
   });
 });
+
+describe('ResendMailer: адрес из ответа провайдера (круг 6)', () => {
+  const providerMessage =
+    'You can only send testing emails to your own email address (owner@audit.example). To send to user@example.com, verify a domain.';
+
+  it('не пишет адреса из текста отказа в журнал, но сохраняет смысл отказа', async () => {
+    const { client } = fakeClient({ data: null, error: { message: providerMessage, name: 'validation_error' } });
+    const errorSpy = vi.fn();
+    const spyLogger = { info: vi.fn(), error: errorSpy } as unknown as import('pino').Logger;
+    const mailer = new ResendMailer(client, 'noreply@example.com', spyLogger);
+
+    await mailer.send({ to: 'user@example.com', subject: 'Код', text: 'x' }).catch(() => undefined);
+
+    const logged = JSON.stringify(errorSpy.mock.calls);
+    expect(logged).not.toContain('owner@audit.example');
+    expect(logged).not.toContain('user@example.com');
+    expect(logged).toContain('You can only send testing emails');
+    expect(logged).toContain('validation_error');
+  });
+
+  it('не уносит адреса в текст ошибки', async () => {
+    const { client } = fakeClient({ data: null, error: { message: providerMessage, name: 'validation_error' } });
+    const mailer = new ResendMailer(client, 'noreply@example.com', logger);
+
+    const err = (await mailer.send({ to: 'user@example.com', subject: 'Код', text: 'x' }).catch((e: unknown) => e)) as Error;
+
+    expect(err).toBeInstanceOf(MailDeliveryError);
+    expect(`${err.message}\n${err.stack ?? ''}`).not.toMatch(/owner@audit\.example|user@example\.com/);
+  });
+});

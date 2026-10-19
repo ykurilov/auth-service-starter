@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import type { Clock } from '../../ports/clock.js';
 import { MailDeliveryError, type Mailer } from '../../ports/mailer.js';
@@ -28,6 +28,18 @@ export interface EmailCodeProviderOptions {
 export interface StartedChallenge {
   handle: string; // отдаётся браузеру скрытым полем формы
   email: string;
+}
+
+// handle попытки — HMAC её id по ключу привязки к браузеру (значение
+// csrf-cookie). Тот же браузер может вернуться к своей попытке (повторное
+// «Получить код», «Назад», обновление страницы): handle восстанавливается
+// из cookie, а в хранилище лежат только хеши handle и привязки.
+function handleFor(binding: string, challengeId: string): string {
+  return createHmac('sha256', binding).update(`login-challenge:${challengeId}`).digest('base64url');
+}
+
+function sameLink(a: PendingLink | null, b: PendingLink | null): boolean {
+  return a === null || b === null ? a === b : a.provider === b.provider && a.subject === b.subject;
 }
 
 export interface ChallengeView {
@@ -117,10 +129,10 @@ export class EmailCodeProvider implements IdentityProvider {
   }): Promise<StartedChallenge> {
     const email = parseEmailAddress(input.email);
     if (!email) throw new InvalidEmailError();
-    const handle = randomBytes(32).toString('base64url');
+    const id = randomUUID();
+    const handle = handleFor(input.binding, id);
     const code = this.generateCode();
     const now = this.clock.now();
-    const id = randomUUID();
     await this.store.create({
       id,
       handleHash: hashHandle(handle),
@@ -133,6 +145,8 @@ export class EmailCodeProvider implements IdentityProvider {
       maxAttempts: this.maxAttempts,
       resends: 0,
       maxResends: this.maxResends,
+      lastSlot: 0,
+      codeSlot: 0,
       link: input.link ?? null,
       createdAt: now,
       expiresAt: new Date(now.getTime() + this.ttlMs()),
@@ -150,11 +164,38 @@ export class EmailCodeProvider implements IdentityProvider {
     return { handle, email };
   }
 
+  // Живая попытка этого браузера на этот адрес у этой регистрации клиента с
+  // той же отложенной привязкой и с оставшимися проверками: её handle, письмо
+  // не отправляется. null — такой нет (в том числе попытка, начатая до
+  // вывода handle из привязки: её handle не восстановить).
+  async resume(input: {
+    email: string;
+    binding: string;
+    client: ChallengeClient;
+    link?: PendingLink;
+  }): Promise<StartedChallenge | null> {
+    const email = parseEmailAddress(input.email);
+    if (!email) return null;
+    const record = await this.store.findLatestForBrowser(
+      bindingHashOf(input.binding),
+      email,
+      input.client,
+      this.clock.now(),
+    );
+    if (!record || record.attempts >= record.maxAttempts || !sameLink(record.link, input.link ?? null)) return null;
+    const handle = handleFor(input.binding, record.id);
+    if (!sameHash(record.handleHash, hashHandle(handle))) return null;
+    return { handle, email };
+  }
+
   // Переотправка в рамках той же попытки. Слот берётся атомарно до письма:
-  // параллельные запросы не отправят больше maxResends писем. Письмо ушло —
-  // код заменяется, прежний перестаёт действовать сразу. Письмо не ушло —
-  // слот возвращается, прежний код действует. null — попытки нет/исчерпана,
-  // нужен новый вход (в том числе если её погасили, пока уходило письмо).
+  // параллельные запросы не отправят больше maxResends писем. Письмо ушло или
+  // могло уйти (таймаут провайдера) — слот потрачен, код этого письма
+  // становится действующим, если новее слота нет; прежний код перестаёт
+  // действовать. Неподтверждённое письмо — UnconfirmedCodeDeliveryError с
+  // handle попытки: код из него подойдёт. Провайдер отказал — слот
+  // возвращается, прежний код действует. null — попытки нет/исчерпана, нужен
+  // новый вход (в том числе если её погасили, пока уходило письмо).
   // Попытка другой регистрации клиента — ChallengeClientChangedError, письма нет.
   async resend(input: { handle: string; binding: string; client: ChallengeClient }): Promise<{ email: string } | null> {
     const handleHash = hashHandle(input.handle);
@@ -165,20 +206,29 @@ export class EmailCodeProvider implements IdentityProvider {
     const reserved = await this.store.reserveResend(handleHash, bindingHash, this.clock.now());
     if (!reserved) return null;
     const code = this.generateCode();
+    let unconfirmed: MailDeliveryError | null = null;
     try {
       await this.sendCode(reserved.email, code, reserved.link);
     } catch (err) {
-      await this.store.releaseResend(reserved.id);
-      throw err;
+      if (!(err instanceof MailDeliveryError) || err.outcome !== 'unconfirmed') {
+        await this.store.releaseResend(reserved.id);
+        throw err;
+      }
+      unconfirmed = err;
     }
     const now = this.clock.now();
     const replaced = await this.store.replaceCode(
       reserved.id,
+      reserved.lastSlot,
       hashCode(input.handle, code),
       new Date(now.getTime() + this.ttlMs()),
       now,
     );
-    return replaced ? { email: reserved.email } : null;
+    // Код не записан: попытку погасили (нужен новый вход) или действует код
+    // более нового слота — тогда попытка жива и продолжается.
+    if (!replaced && !(await this.store.find(handleHash, bindingHash, now))) return null;
+    if (unconfirmed) throw new UnconfirmedCodeDeliveryError({ handle: input.handle, email: reserved.email }, unconfirmed);
+    return { email: reserved.email };
   }
 
   async describe(input: { handle: string; binding: string }): Promise<ChallengeView | null> {

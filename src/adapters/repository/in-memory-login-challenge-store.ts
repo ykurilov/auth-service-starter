@@ -1,4 +1,5 @@
 import type {
+  ChallengeClient,
   LoginChallengeRecord,
   LoginChallengeStore,
 } from '../../domain/email-login/login-challenge.js';
@@ -34,6 +35,29 @@ export class InMemoryLoginChallengeStore implements LoginChallengeStore {
     return r ? InMemoryLoginChallengeStore.copy(r) : null;
   }
 
+  async findLatestForBrowser(
+    bindingHash: string,
+    email: string,
+    client: ChallengeClient,
+    now: Date,
+  ): Promise<LoginChallengeRecord | null> {
+    let latest: LoginChallengeRecord | undefined;
+    // При равном времени — записанная позже.
+    for (const r of this.records) {
+      if (
+        r.bindingHash === bindingHash &&
+        r.email === email &&
+        r.clientId === client.id &&
+        r.clientRegistrationId === (client.registrationId ?? null) &&
+        r.consumedAt === null &&
+        r.expiresAt.getTime() > now.getTime() &&
+        (!latest || r.createdAt.getTime() >= latest.createdAt.getTime())
+      )
+        latest = r;
+    }
+    return latest ? InMemoryLoginChallengeStore.copy(latest) : null;
+  }
+
   async claimAttempt(handleHash: string, bindingHash: string, now: Date): Promise<LoginChallengeRecord | null> {
     const r = this.alive(handleHash, bindingHash, now);
     if (!r || r.attempts >= r.maxAttempts) return null;
@@ -45,13 +69,15 @@ export class InMemoryLoginChallengeStore implements LoginChallengeStore {
     const r = this.alive(handleHash, bindingHash, now);
     if (!r || r.resends >= r.maxResends || r.attempts >= r.maxAttempts) return null;
     r.resends += 1;
+    r.lastSlot += 1;
     return InMemoryLoginChallengeStore.copy(r);
   }
 
-  async replaceCode(id: string, codeHash: string, expiresAt: Date, now: Date): Promise<boolean> {
+  async replaceCode(id: string, slot: number, codeHash: string, expiresAt: Date, now: Date): Promise<boolean> {
     const r = this.records.find((x) => x.id === id);
-    if (!r || r.consumedAt !== null || r.expiresAt.getTime() <= now.getTime()) return false;
+    if (!r || r.consumedAt !== null || r.expiresAt.getTime() <= now.getTime() || r.codeSlot >= slot) return false;
     r.codeHash = codeHash;
+    r.codeSlot = slot;
     r.expiresAt = expiresAt;
     return true;
   }

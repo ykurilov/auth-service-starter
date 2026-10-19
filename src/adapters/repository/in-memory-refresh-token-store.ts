@@ -24,6 +24,29 @@ export class InMemoryRefreshTokenStore implements RefreshTokenStore {
     return r ? InMemoryRefreshTokenStore.copy(r) : null;
   }
 
+  async findSessionIdByFamily(familyHash: string): Promise<string | null> {
+    return this.records.find((r) => r.familyHash === familyHash)?.sessionId ?? null;
+  }
+
+  async pruneHistory(consumedBefore: Date, keepLatest: number): Promise<number> {
+    const newestFirst = [...this.records].reverse().filter((r) => r.familyHash !== undefined);
+    const kept = new Set<RefreshTokenRecord>();
+    const perSession = new Map<string, number>();
+    const families = new Set<string>();
+    for (const r of newestFirst) {
+      const n = (perSession.get(r.sessionId) ?? 0) + 1;
+      perSession.set(r.sessionId, n);
+      if (n <= keepLatest || !families.has(r.familyHash!) ||
+          r.consumedAt === null || r.consumedAt.getTime() >= consumedBefore.getTime()) kept.add(r);
+      families.add(r.familyHash!);
+    }
+    const remaining = this.records.filter((r) => r.familyHash === undefined || kept.has(r));
+    const deleted = this.records.length - remaining.length;
+    this.records.length = 0;
+    this.records.push(...remaining);
+    return deleted;
+  }
+
   async rotate(headId: string, successor: RefreshTokenRecord, at: Date): Promise<boolean> {
     const head = this.records.find((r) => r.id === headId);
     if (!head || head.consumedAt !== null) return false;

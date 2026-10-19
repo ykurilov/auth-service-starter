@@ -1,5 +1,5 @@
-import { decodeJwtClaims } from './claims.js';
-import type { TokenSet } from './oidc-client.js';
+import { decodeJwtClaims } from './claims';
+import type { TokenSet } from './oidc-client';
 
 export interface SessionUser {
   id: string;

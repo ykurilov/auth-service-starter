@@ -10,12 +10,25 @@ export function ipHash(req: FastifyRequest): string {
   return sha256Hex(req.ip);
 }
 
-// Время ожидания для человека: «через 15 мин», «через 3 ч».
+// Время ожидания для человека: «через 42 с», «через 15 мин», «через 3 ч».
+// До полутора минут — в секундах: «через 1 мин» вместо «через 60 с» звучит
+// дольше, чем есть.
 export function waitText(seconds: number): string {
-  if (seconds < 60) return `через ${Math.max(1, Math.ceil(seconds))} с`;
+  if (seconds <= 90) return `через ${Math.max(1, Math.ceil(seconds))} с`;
   const minutes = Math.ceil(seconds / 60);
   if (minutes <= 90) return `через ${minutes} мин`;
   return `через ${Math.ceil(minutes / 60)} ч`;
+}
+
+// Отказ по лимиту: 429 + Retry-After и страница со временем ожидания.
+export function sendTooManyAttempts(reply: FastifyReply, retryAfterSeconds: number): void {
+  reply.header('Retry-After', String(retryAfterSeconds));
+  reply.status(429);
+  reply.type('text/html; charset=utf-8');
+  reply.send(errorPage(
+    'Слишком много попыток',
+    `Повторить можно ${waitText(retryAfterSeconds)}. Вернитесь на страницу входа и попробуйте снова.`,
+  ));
 }
 
 // enforce возвращает true если запрос можно продолжать, false если лимит
@@ -30,13 +43,7 @@ export async function enforce(
 ): Promise<boolean> {
   const r = await limiter.hit(key, rule.limit, rule.windowSeconds);
   if (!r.allowed) {
-    reply.header('Retry-After', String(r.retryAfterSeconds));
-    reply.status(429);
-    reply.type('text/html; charset=utf-8');
-    reply.send(errorPage(
-      'Слишком много попыток',
-      `Повторить можно ${waitText(r.retryAfterSeconds)}. Вернитесь на страницу входа и попробуйте снова.`,
-    ));
+    sendTooManyAttempts(reply, r.retryAfterSeconds);
     return false;
   }
   return true;

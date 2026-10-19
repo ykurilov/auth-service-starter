@@ -182,7 +182,7 @@ describe('SessionService.refresh', () => {
     await expect(service.refresh(a.refreshToken, startParams.device)).rejects.toBeInstanceOf(InvalidRefreshTokenError);
     expect((await sessions.findById(a.sessionId))?.revokedAt).toBeNull();
     const upgraded = await service.refresh(legacyRaw, startParams.device);
-    expect((await refresh.findByHash(sha256Hex(upgraded.refreshToken)))?.derivationVersion).toBe('hmac-sha256-v1');
+    expect((await refresh.findByHash(sha256Hex(upgraded.refreshToken)))?.derivationVersion).toBe('hmac-sha256-v2');
     clock.advance(61);
     await expect(service.refresh(a.refreshToken, startParams.device)).rejects.toBeInstanceOf(RefreshTokenReuseError);
   });

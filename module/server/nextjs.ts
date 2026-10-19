@@ -1,6 +1,6 @@
-import { authCookieNames, parseCookies } from './cookies.js';
-import { loadModuleConfig } from './core/config.js';
-import { createSessionGuard, type GuardOptions } from './session-guard.js';
+import { authCookieNames, parseCookies } from './cookies';
+import { loadModuleConfig } from './core/config';
+import { createSessionGuard, type GuardOptions } from './session-guard';
 
 // Адаптер Next.js: middleware поверх общей защиты (session-guard.ts).
 

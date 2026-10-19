@@ -4,6 +4,7 @@ import type { IdentityService } from '../identity/identity-service.js';
 import type { ProviderIdentity } from '../identity/provider-identity.js';
 import type { AuthorizationCodeService } from './authorization-code-service.js';
 import type { AuthSnapshot } from './authorization-code.js';
+import type { SsoSession } from '../sso/sso-session.js';
 import {
   InvalidClientError,
   InvalidRedirectUriError,
@@ -26,10 +27,13 @@ export interface ValidatedAuthorization {
   request: AuthorizationRequest;
 }
 
-export interface CompletedLogin {
-  code: string;
+export interface AuthenticatedLogin {
   userId: string;
   auth: AuthSnapshot;
+}
+
+export interface CompletedLogin extends AuthenticatedLogin {
+  code: string;
 }
 
 export class LoginService {
@@ -57,6 +61,30 @@ export class LoginService {
     validated: ValidatedAuthorization,
     providerIdentity: ProviderIdentity,
   ): Promise<CompletedLogin> {
+    const { userId, auth } = await this.authenticate(validated, providerIdentity);
+    const code = await this.codes.issue({
+      clientId: validated.client.id,
+      // Тип, по которому решено, нужно ли согласие, и регистрация из того же
+      // снимка: обмен сверит их с текущими.
+      clientType: validated.client.type,
+      clientRegistrationId: validated.client.registrationId,
+      userId,
+      redirectUri: validated.request.redirectUri,
+      codeChallenge: validated.request.codeChallenge,
+      scope: validated.request.scope,
+      nonce: validated.request.nonce,
+      auth,
+    });
+    return { code, userId, auth };
+  }
+
+  // Аутентификация без выпуска кода: связываем личность и собираем снимок
+  // входа. Внешнему приложению код выдаётся только после экрана согласия —
+  // по SSO-сессии, начатой этим входом (completeSsoLogin).
+  async authenticate(
+    validated: ValidatedAuthorization,
+    providerIdentity: ProviderIdentity,
+  ): Promise<AuthenticatedLogin> {
     if (!validated.client.allowedProviders.includes(providerIdentity.provider)) {
       throw new ProviderNotAllowedError(providerIdentity.provider);
     }
@@ -70,29 +98,18 @@ export class LoginService {
       name: user.displayName,
       loginId: randomUUID(),
     };
-    const code = await this.codes.issue({
-      clientId: validated.client.id,
-      // Тип, по которому решено, нужно ли согласие, и регистрация из того же
-      // снимка: обмен сверит их с текущими.
-      clientType: validated.client.type,
-      clientRegistrationId: validated.client.registrationId,
-      userId: user.id,
-      redirectUri: validated.request.redirectUri,
-      codeChallenge: validated.request.codeChallenge,
-      scope: validated.request.scope,
-      nonce: validated.request.nonce,
-      auth,
-    });
-    return { code, userId: user.id, auth };
+    return { userId: user.id, auth };
   }
 
   // SSO: пользователь уже аутентифицирован (живая SSO-сессия), личность известна.
   // Не резолвим провайдера заново — выпускаем код по готовому снимку auth.
+  // Код помнит цепочку SSO-сессии: обмен сверит, что браузер не сменил в ней
+  // аккаунт, даже если снимок auth без loginId (сессия до миграции 0013).
   async completeSsoLogin(
     validated: ValidatedAuthorization,
-    userId: string,
-    auth: AuthSnapshot,
+    session: Pick<SsoSession, 'userId' | 'auth' | 'chainId'>,
   ): Promise<string> {
+    const { userId, auth } = session;
     if (!validated.client.allowedProviders.includes(auth.provider)) {
       throw new ProviderNotAllowedError(auth.provider);
     }
@@ -108,6 +125,7 @@ export class LoginService {
       scope: validated.request.scope,
       nonce: validated.request.nonce,
       auth,
+      ssoChainId: session.chainId,
     });
   }
 }

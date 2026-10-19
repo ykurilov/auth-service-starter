@@ -7,6 +7,7 @@ import { runMigrations } from '../../../../src/adapters/db/migrate.js';
 import type { Db } from '../../../../src/adapters/db/pool.js';
 import type { SsoSession } from '../../../../src/domain/sso/sso-session.js';
 import { PgSsoSessionStore } from '../../../../src/adapters/repository/pg/pg-sso-session-store.js';
+import { bindingContract } from '../sso-binding-contract.js';
 
 const migrationsDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -47,6 +48,8 @@ describe('PgSsoSessionStore на pg-mem', () => {
   afterEach(async () => {
     await db.close();
   });
+
+  bindingContract(() => store);
 
   it('save -> findByHash round-trip, auth совпадает', async () => {
     const session = makeSsoSession();

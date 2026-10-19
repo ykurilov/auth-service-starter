@@ -8,13 +8,6 @@ export class InvalidCredentialsError extends Error {
   }
 }
 
-export class EmailAlreadyRegisteredError extends Error {
-  constructor(email: string) {
-    super(`email уже зарегистрирован: ${email}`);
-    this.name = 'EmailAlreadyRegisteredError';
-  }
-}
-
 // Адрес почты не прошёл строгую проверку (parseEmailAddress).
 export class InvalidEmailError extends Error {
   constructor() {
@@ -25,11 +18,17 @@ export class InvalidEmailError extends Error {
 
 // Письмо первого шага не подтвердилось (ошибка или таймаут провайдера), но
 // попытка уже создана: письмо могло всё же дойти. Ошибка несёт handle попытки,
-// чтобы браузер остался на экране кода — запоздавший код подойдёт.
+// чтобы браузер остался на экране кода — запоздавший код подойдёт. handle и
+// адрес — не для журнала: поле неперечислимое, его не выведет и сериализатор,
+// который обходит поля ошибки.
 export class UnconfirmedCodeDeliveryError extends MailDeliveryError {
-  constructor(readonly challenge: { handle: string; email: string }, cause: MailDeliveryError) {
+  declare readonly challenge: { handle: string; email: string };
+
+  constructor(challenge: { handle: string; email: string }, cause: MailDeliveryError) {
     super(cause.message);
+    this.message = cause.message;
     this.name = 'UnconfirmedCodeDeliveryError';
+    Object.defineProperty(this, 'challenge', { value: challenge, enumerable: false });
   }
 }
 

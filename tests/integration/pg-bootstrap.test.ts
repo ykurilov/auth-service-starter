@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { bootstrap } from '../../src/index.js';
 import { createMemDb } from '../helpers/pg-mem-db.js';
-import { TEST_VERIFIER, TEST_CHALLENGE, TEST_CSRF, FORM_HEADERS, extractChallenge } from '../adapters/http/helpers.js';
+import { TEST_VERIFIER, TEST_CHALLENGE, TEST_CSRF, FORM_HEADERS, extractChallenge, confirmConsent } from '../adapters/http/helpers.js';
 import type { Db } from '../../src/adapters/db/pool.js';
 
 const FORM = FORM_HEADERS;
@@ -64,7 +64,8 @@ describe('bootstrap на Postgres-хранилище (pg-mem)', () => {
     expect(authRes.body).toContain('/authorize/identify');
 
     // 2. identify (код записан в email_secrets Postgres-слоя) → code/verify →
-    // 302 с code= в Location (пользователь, authorization-код и sso-сессия — в БД).
+    // экран согласия внешнего приложения → «Продолжить» → 302 с code= в
+    // Location (пользователь, authorization-код и sso-сессия — в БД).
     const identify = await app.inject({
       method: 'POST',
       url: '/authorize/identify',
@@ -83,8 +84,8 @@ describe('bootstrap на Postgres-хранилище (pg-mem)', () => {
       }).toString(),
       headers: FORM,
     });
-    expect(verifyRes.statusCode).toBe(302);
-    const location = new URL(verifyRes.headers['location'] as string);
+    expect(verifyRes.statusCode).toBe(303);
+    const location = new URL(await confirmConsent(app, verifyRes, verifyRes.headers['location'] as string));
     expect(location.origin + location.pathname).toBe('https://shop.example/cb');
     const code = location.searchParams.get('code');
     expect(code).toBeTruthy();

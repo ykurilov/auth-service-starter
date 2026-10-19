@@ -44,7 +44,7 @@ describe('журнал событий безопасности', () => {
     deps.sessions = new SessionService(new InMemorySessionStore(refreshStore), refreshStore,
       deps.tokens, clock, { refreshTtlSeconds: deps.config.refreshTtlSeconds });
     // Обмен кода создаёт сессию через блокировку клиента — с тем же сервисом сессий.
-    deps.clientLock = new InMemoryClientLock(deps.adminClients!, { codes: deps.codes, sessions: deps.sessions, sso: deps.ssoStores.sso },
+    deps.clientLock = new InMemoryClientLock(deps.adminClients!, { codes: deps.codes, sessions: deps.sessions, sso: deps.ssoSessionStore },
       async () => {});
     const app = buildServer(deps);
     const code = await loginWithCode(app);

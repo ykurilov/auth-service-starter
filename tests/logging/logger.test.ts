@@ -84,3 +84,74 @@ describe('P3-1: глубокое скрытие и код ошибки', () => {
     expect(out).toContain('"stack"');
   });
 });
+
+describe('R4: общий объект и предел глубины', () => {
+  it('объект, встреченный второй раз по другой ссылке, тоже скрывается', () => {
+    const { stream, lines } = capture();
+    const logger = createLogger('info', stream);
+    const shared = { code: '739182', id: 'msg-1' };
+    logger.info({ first: shared, second: shared, list: [shared] }, 'проверка');
+    const out = lines.join('');
+    expect(out).not.toContain('739182');
+    expect(out.match(/msg-1/g)).toHaveLength(3);
+  });
+
+  it('цикл не роняет запись и не раскрывает поля', () => {
+    const { stream, lines } = capture();
+    const logger = createLogger('info', stream);
+    const node: Record<string, unknown> = { token: 'tok-S3CR3T' };
+    node.self = node;
+    logger.info({ node }, 'проверка');
+    expect(lines.join('')).not.toContain('S3CR3T');
+  });
+
+  it('глубже предела объект не выводится как есть', () => {
+    const { stream, lines } = capture();
+    const logger = createLogger('info', stream);
+    let deep: Record<string, unknown> = { password: 'pw-S3CR3T' };
+    for (let i = 0; i < 12; i++) deep = { inner: deep };
+    logger.info({ deep }, 'проверка');
+    expect(lines.join('')).not.toContain('S3CR3T');
+  });
+});
+
+describe('R5: объекты ошибок проходят через фильтр', () => {
+  it('прикреплённые к ошибке данные не попадают в запись, тип, сообщение, код и стек остаются', () => {
+    const { stream, lines } = capture();
+    const logger = createLogger('info', stream);
+    const err = Object.assign(new TypeError('сбой доставки'), {
+      code: 'ETIMEDOUT',
+      challenge: { handle: 'handle-S3CR3T', email: 'victim@corp.example' },
+      detail: 'Key (email)=(victim@corp.example) already exists',
+      response: { headers: { authorization: 'Bearer abc-S3CR3T' } },
+    });
+    logger.error({ err, nested: { failure: err } }, 'сбой');
+    const out = lines.join('');
+    expect(out).not.toContain('S3CR3T');
+    expect(out).not.toContain('victim@corp.example');
+    const record = JSON.parse(out);
+    expect(record.err).toMatchObject({ type: 'TypeError', message: 'сбой доставки', code: 'ETIMEDOUT' });
+    expect(record.err.stack).toContain('сбой доставки');
+    expect(record.nested.failure).toMatchObject({ type: 'TypeError', code: 'ETIMEDOUT' });
+  });
+
+  it('причина ошибки (cause) тоже фильтруется', () => {
+    const { stream, lines } = capture();
+    const logger = createLogger('info', stream);
+    const cause = Object.assign(new Error('нет ответа'), { email: 'victim@corp.example', code: 'ECONNRESET' });
+    const err = new Error('письмо не отправлено', { cause });
+    logger.error({ err }, 'сбой');
+    const out = lines.join('');
+    expect(out).not.toContain('victim@corp.example');
+    const record = JSON.parse(out);
+    expect(record.err.cause).toMatchObject({ type: 'Error', message: 'нет ответа', code: 'ECONNRESET' });
+  });
+
+  it('код ошибки, который не строка и не число, не выводится', () => {
+    const { stream, lines } = capture();
+    const logger = createLogger('info', stream);
+    const err = Object.assign(new Error('boom'), { code: { otp: '739182' } });
+    logger.error({ err }, 'сбой');
+    expect(lines.join('')).not.toContain('739182');
+  });
+});

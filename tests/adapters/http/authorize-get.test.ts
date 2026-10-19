@@ -110,7 +110,9 @@ describe('GET /authorize', () => {
   });
 
   it('prompt=none для external с живой SSO → consent_required, без кода и профиля', async () => {
-    const deps = await makeTestDeps();
+    const deps = await makeTestDeps({
+      clients: [{ id: 'app', type: 'external', redirectUris: ['https://app.example/cb'], allowedProviders: ['email'] }],
+    });
     const { rawToken } = await deps.sso.start('user-1', {
       provider: 'email',
       email: 'user@x.com',
