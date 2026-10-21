@@ -7,6 +7,6 @@
     "moduleResolution": "Bundler",
     "lib": ["ES2022", "DOM"]
   },
-  "include": [".", "../browser/module-logout.browser.ts"],
+  "include": [".", "../browser/module-logout.browser.ts", "../browser/module-unavailable.browser.ts"],
   "exclude": []
 }

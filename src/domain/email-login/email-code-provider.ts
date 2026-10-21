@@ -261,7 +261,7 @@ export class EmailCodeProvider implements IdentityProvider {
     const record = await this.store.claimAttempt(hashHandle(handle), bindingHashOf(binding), now);
     if (!record) throw new InvalidCredentialsError();
     if (!sameClient(record, client)) throw new ChallengeClientChangedError();
-    if (!sameHash(record.codeHash, hashCode(handle, code.trim()))) throw new InvalidCredentialsError();
+    if (!sameHash(record.codeHash, hashCode(handle, code.replace(/[\s-]+/g, '')))) throw new InvalidCredentialsError();
     if (!(await this.store.consume(record.id, now))) throw new InvalidCredentialsError();
     return { identity: codeIdentity(record.email), link: record.link };
   }

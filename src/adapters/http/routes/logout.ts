@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { HttpDeps } from '../deps.js';
 import { errorPage } from '../views/error-page.js';
-import { logoutConfirmPage, loggedOutPage } from '../views/logout-page.js';
+import { logoutConfirmPage, loggedOutPage, loggedOutWithoutSessionPage } from '../views/logout-page.js';
 import { html } from './authorize.js';
 import { readSsoCookie, clearSsoCookie, readBindingCookie, clearBindingCookie } from '../cookies.js';
 import { ensureCsrf, isSameOriginRequest, verifyCsrf } from '../csrf.js';
@@ -54,7 +54,11 @@ export function registerLogout(app: FastifyInstance, deps: HttpDeps): void {
     if (!parsed.success)
       return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
     if (!isSameOriginRequest(req, deps.config) || !verifyCsrf(req, deps.config, parsed.data.csrf))
-      return html(reply, 400, errorPage('Некорректный запрос', 'Сессия формы истекла'));
+      return html(reply, 400, errorPage(
+        'Некорректный запрос',
+        'Сессия формы истекла. Откройте страницу выхода заново.',
+        { href: `/logout?${new URLSearchParams({ client_id: parsed.data.client_id }).toString()}`, label: 'Вернуться к выходу' },
+      ));
     const client = await deps.clients.findClient(parsed.data.client_id);
     if (!client)
       return html(reply, 400, errorPage('Некорректный запрос', 'Неизвестное приложение'));
@@ -77,6 +81,6 @@ export function registerLogout(app: FastifyInstance, deps: HttpDeps): void {
       client.postLogoutRedirectUris,
     );
     if (target !== undefined) return reply.redirect(target, 302);
-    return html(reply, 200, loggedOutPage());
+    return html(reply, 200, token || binding ? loggedOutPage() : loggedOutWithoutSessionPage());
   });
 }

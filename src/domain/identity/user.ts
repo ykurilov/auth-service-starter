@@ -1,4 +1,7 @@
-export type UserStatus = 'active' | 'blocked';
+// Блокировки пользователей сервис не поддерживает: ни при входе, ни при
+// обновлении токена статус не проверяется. Колонка users.status в базе есть,
+// но всегда 'active'.
+export type UserStatus = 'active';
 
 export interface User {
   id: string;

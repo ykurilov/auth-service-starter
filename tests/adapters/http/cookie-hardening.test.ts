@@ -11,7 +11,7 @@ function setCookies(res: { headers: Record<string, unknown> }): string[] {
 }
 
 const authorizeQuery =
-  'client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_challenge=chal' +
+  'client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_challenge=chalchalchalchalchalchalchalchalchalchalchal' +
   '&code_challenge_method=S256&scope=openid&state=st1';
 
 async function secureApp() {

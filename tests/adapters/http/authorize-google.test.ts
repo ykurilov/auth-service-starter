@@ -49,7 +49,7 @@ function form(overrides: Record<string, string> = {}): string {
   const base: Record<string, string> = {
     client_id: 'app',
     redirect_uri: 'https://app.example/cb',
-    code_challenge: 'chal',
+    code_challenge: 'chalchalchalchalchalchalchalchalchalchalchal',
     code_challenge_method: 'S256',
     scope: 'openid',
     state: 'st1',
@@ -61,7 +61,7 @@ function form(overrides: Record<string, string> = {}): string {
 
 const authorizeUrl =
   '/authorize?client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb' +
-  '&code_challenge=chal&code_challenge_method=S256&scope=openid';
+  '&code_challenge=chalchalchalchalchalchalchalchalchalchalchal&code_challenge_method=S256&scope=openid';
 
 type App = ReturnType<typeof buildServer>;
 
@@ -275,7 +275,7 @@ describe('POST /authorize/google', () => {
       await deps.login.validateRequest({
         clientId: 'app',
         redirectUri: 'https://app.example/cb',
-        codeChallenge: 'chal',
+        codeChallenge: 'chalchalchalchalchalchalchalchalchalchalchal',
         codeChallengeMethod: 'S256',
         scope: 'openid',
       }),
@@ -306,7 +306,7 @@ describe('R01: сторонний адрес Google (без gmail/hd) не да�
       await deps.login.validateRequest({
         clientId: 'app',
         redirectUri: 'https://app.example/cb',
-        codeChallenge: 'chal',
+        codeChallenge: 'chalchalchalchalchalchalchalchalchalchalchal',
         codeChallengeMethod: 'S256',
         scope: 'openid',
       }),

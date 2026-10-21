@@ -12,6 +12,15 @@ export interface Client {
   registrationId?: string;
 }
 
+// Клиент с таким id уже есть: хранилище отказало при записи (в том числе
+// проигравшему гонку двух одновременных регистраций).
+export class ClientAlreadyExistsError extends Error {
+  constructor(readonly clientId: string) {
+    super(`client already exists: ${clientId}`);
+    this.name = 'ClientAlreadyExistsError';
+  }
+}
+
 export interface ClientRegistry {
   findClient(id: string): Promise<Client | null>;
 }

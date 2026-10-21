@@ -85,6 +85,8 @@ function safeNext(raw: string | null): string {
 const TOO_LARGE_SESSION = 'Данных вашего аккаунта (например, ролей) слишком много: браузер не сохранит такую сессию. ' +
   'Повтор не поможет — сообщите об ошибке администратору приложения.';
 
+const ACCESS_DENIED = 'Вы отказались от входа в приложение на экране подтверждения. Если это вышло случайно, попробуйте снова.';
+
 // Страница сбоя входа. Сама вход не запускает: редирект на защищённую
 // страницу снова отправил бы на вход, и получился бы круг. «Попробовать
 // снова» — обычный вход по нажатию пользователя.
@@ -102,6 +104,21 @@ function errorPage(next: string, cookies: string[], reason = 'Если ошиб�
   const headers = new Headers({ 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
   for (const c of cookies) headers.append('set-cookie', c);
   return new Response(html, { status: 400, headers });
+}
+
+// Страница подтверждения выхода открыта давно (cookie живёт 10 минут) или в
+// другой вкладке: вместо голого «Forbidden» — пояснение и ссылка на новую.
+function logoutExpiredPage(): Response {
+  const html = '<!doctype html><html lang="ru"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<title>Страница выхода устарела</title></head>' +
+    '<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">' +
+    '<h1>Страница выхода устарела</h1>' +
+    '<p>Подтверждение выхода действует 10 минут. Откройте его заново — вы пока не вышли.</p>' +
+    '<p><a href="/api/auth/logout">Выйти</a> · <a href="/">На главную</a></p></body></html>';
+  return new Response(html, {
+    status: 403, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+  });
 }
 
 function redirect(location: string, cookies: string[] = []): Response {
@@ -282,6 +299,7 @@ export function createAuthHandlers(options: LoadConfigOptions = {}, retiredOverr
       // входа новый вход не запускает — так не бывает круга.
       if (ownFlow.silent === 'then-interactive' && INTERACTION_ERRORS.has(error))
         return startFlow(next, secure, undefined, clearFlow);
+      if (error === 'access_denied' && ownFlow.silent !== 'only') return errorPage(next, clearFlow, ACCESS_DENIED);
       return giveUp();
     }
 
@@ -347,7 +365,7 @@ export function createAuthHandlers(options: LoadConfigOptions = {}, retiredOverr
     const expected = parseCookies(request.headers.get('cookie'))[names.logout];
     const data = typeof csrf === 'string' && csrf === expected
       ? await unseal<{ intent?: string }>(csrf, config.cookieSecret) : null;
-    if (data?.intent !== 'logout') return new Response('Forbidden', { status: 403 });
+    if (data?.intent !== 'logout') return logoutExpiredPage();
     const res = await logout(request, secureApp);
     res.headers.append('set-cookie', clearCookie(names.logout, secureApp));
     // Не оставляем активные login flow, способные восстановить сессию после выхода.

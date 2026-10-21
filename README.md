@@ -23,10 +23,12 @@ node scripts/setup.mjs --issuer https://auth.example.com --from auth@example.com
 Команда создаёт `.env` с уникальными паролем базы и токеном администратора, не выводя их в консоль. Существующий файл она не перезаписывает. В `.env` заполните `RESEND_API_KEY`; `EMAIL_FROM` должен принадлежать подтверждённому в Resend домену. Замените `EMAIL_APP_NAME` названием своего проекта.
 
 ```sh
-docker compose up -d --build
+docker compose up -d --build --wait
 docker compose ps
 curl --fail http://127.0.0.1:3016/live
 ```
+
+`--wait` ждёт, пока сервисы станут здоровыми, и завершается ошибкой, если они не поднялись. Если вы меняли `HOST_PORT`, подставьте его вместо 3016. Подсеть Docker и `TRUST_PROXY` описаны в [docs/DEPLOY.md](docs/DEPLOY.md#доверенные-прокси-и-порты): прочитайте их до первого запуска.
 
 Ожидаемый ответ проверки: `{"status":"ok"}`. Схема PostgreSQL и ключ подписи создаются при первом запуске. Если приложение завершается, причина видна в `docker compose logs --tail=50 app`: production-запуск требует настроенную почту и постоянную БД.
 

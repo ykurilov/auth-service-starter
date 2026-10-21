@@ -22,7 +22,7 @@ function makeCode(over: Partial<AuthorizationCodeRecord> = {}): AuthorizationCod
     clientType: 'internal',
     userId: 'u1',
     redirectUri: 'https://app1/cb',
-    codeChallenge: 'chal',
+    codeChallenge: 'chalchalchalchalchalchalchalchalchalchalchal',
     scope: 'openid',
     auth: { provider: 'email' },
     expiresAt: over.expiresAt ?? NOW,

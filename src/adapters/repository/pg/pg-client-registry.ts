@@ -1,5 +1,5 @@
 import type { Db } from '../../db/pool.js';
-import type { Client, ClientPatch, ClientRegistry } from '../../../domain/clients/client.js';
+import { ClientAlreadyExistsError, type Client, type ClientPatch, type ClientRegistry } from '../../../domain/clients/client.js';
 
 // Строка clients: массивы хранятся в jsonb-колонках, времена — timestamptz.
 interface ClientRow {
@@ -73,19 +73,25 @@ export class PgClientRegistry implements ClientRegistry {
 
   async create(client: Client): Promise<void> {
     const now = new Date();
-    await this.db.query(
-      `insert into clients
-         (id, type, redirect_uris, allowed_providers, post_logout_redirect_uris, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $6)`,
-      [
-        client.id,
-        client.type,
-        jsonbParam(client.redirectUris),
-        jsonbParam(client.allowedProviders),
-        client.postLogoutRedirectUris ? jsonbParam(client.postLogoutRedirectUris) : null,
-        now,
-      ],
-    );
+    try {
+      await this.db.query(
+        `insert into clients
+           (id, type, redirect_uris, allowed_providers, post_logout_redirect_uris, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $6)`,
+        [
+          client.id,
+          client.type,
+          jsonbParam(client.redirectUris),
+          jsonbParam(client.allowedProviders),
+          client.postLogoutRedirectUris ? jsonbParam(client.postLogoutRedirectUris) : null,
+          now,
+        ],
+      );
+    } catch (err) {
+      // 23505 — нарушение уникальности: id занял параллельный запрос.
+      if ((err as { code?: string }).code === '23505') throw new ClientAlreadyExistsError(client.id);
+      throw err;
+    }
   }
 
   async upsert(client: Client): Promise<void> {

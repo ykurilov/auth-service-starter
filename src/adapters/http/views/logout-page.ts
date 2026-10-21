@@ -26,3 +26,14 @@ export function logoutConfirmPage(input: LogoutConfirmPageInput): string {
 export function loggedOutPage(): string {
   return pageLayout('Вы вышли', `<h1 class="h2">Вы вышли</h1><p>Вы вышли из аккаунта. Эту страницу можно закрыть.</p>`);
 }
+
+// В браузере не нашлось ни одной cookie сервиса: гасить нечего. Честно
+// говорим, что вышли из этого приложения, а не из всех сессий браузера.
+export function loggedOutWithoutSessionPage(): string {
+  return pageLayout(
+    'Вы вышли',
+    `<h1 class="h2">Вы вышли</h1><p>Вы вышли из этого приложения. ` +
+      `Сервис входа не нашёл в этом браузере своих cookie, поэтому другие сессии браузера, если они есть, ` +
+      `истекут сами. Эту страницу можно закрыть.</p>`,
+  );
+}

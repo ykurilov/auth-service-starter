@@ -75,7 +75,8 @@ export function createSessionGuard(options: GuardOptions = {}, retired?: Retired
     if (!isProtected(url.pathname, protect)) return result.kind === 'unavailable'
       ? { kind: 'pass', user: null, setCookies: result.setCookies, unavailable: true }
       : { kind: 'pass', user: null, setCookies: result.setCookies };
-    if (result.kind === 'unavailable') return { kind: 'deny', response: temporaryUnavailable() };
+    if (result.kind === 'unavailable') return { kind: 'deny', response: isPageNavigation(request)
+      ? temporaryUnavailablePage() : temporaryUnavailable(DENIED_VARY) };
     // Стираем только то, что стёр resolve: закрытую выходом сессию не трогаем,
     // в браузере уже может быть cookie нового входа.
     return { kind: 'deny', response: isPageNavigation(request)
@@ -83,8 +84,29 @@ export function createSessionGuard(options: GuardOptions = {}, retired?: Retired
   };
 }
 
-export function temporaryUnavailable(): Response {
+// vary — когда вид ответа зависит от заголовков запроса (см. защиту путей).
+export function temporaryUnavailable(vary?: string): Response {
   return Response.json({ error: 'temporarily_unavailable' }, {
-    status: 503, headers: { 'cache-control': 'no-store', 'retry-after': '5' },
+    status: 503, headers: { 'cache-control': 'no-store', 'retry-after': '5', ...(vary ? { vary } : {}) },
+  });
+}
+
+// То же для перехода по странице: человеку нужен текст, а не сырой JSON.
+// Страница сама повторяет запрос через 5 секунд (Retry-After — для клиентов,
+// которые его понимают).
+export function temporaryUnavailablePage(): Response {
+  const html = '<!doctype html><html lang="ru"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<meta http-equiv="refresh" content="5">' +
+    '<title>Сервис входа временно недоступен</title></head>' +
+    '<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">' +
+    '<h1>Сервис входа временно недоступен</h1>' +
+    '<p>Страница сама обновится через несколько секунд. Если ошибка не проходит, зайдите позже.</p>' +
+    '<p><a href="">Обновить сейчас</a> · <a href="/">На главную</a></p></body></html>';
+  return new Response(html, {
+    status: 503,
+    headers: {
+      'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'retry-after': '5', vary: DENIED_VARY,
+    },
   });
 }

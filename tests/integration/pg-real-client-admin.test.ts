@@ -563,6 +563,33 @@ describe.skipIf(!URL_ENV)('Postgres: Admin API клиентов против о�
       expect(stored!.type === 'external' && stored!.allowedProviders.includes('google')).toBe(false);
     } finally { await app.close(); }
   });
+
+  it('п.9: два одновременных POST с одним id: один 201, второй 409, а не 500', async () => {
+    const events = conditions();
+    let armed = false;
+    let reads = 0;
+    // Оба запроса сначала убеждаются, что id свободен, и только потом пишут:
+    // так проигравший упирается в уникальный ключ, а не в проверку.
+    const clientDb = hookedDb(db, {
+      after: async (sql) => {
+        if (!armed || !/from clients\s+where id = \$1/i.test(sql)) return;
+        reads += 1;
+        events.poke();
+        await events.wait(() => reads >= 2);
+      },
+    });
+    const { app } = await pgApp({ clientDb });
+    try {
+      const c = newClient();
+      armed = true;
+      const results = await Promise.all([
+        adminCall(app, 'POST', '/admin/clients', c),
+        adminCall(app, 'POST', '/admin/clients', c),
+      ]);
+      armed = false;
+      expect(results.map((r) => r.statusCode).sort()).toEqual([201, 409]);
+    } finally { await app.close(); }
+  });
 });
 
 describe.skipIf(!URL_ENV)('Postgres: одновременный старт двух копий с миграциями', () => {

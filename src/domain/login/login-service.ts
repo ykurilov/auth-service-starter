@@ -36,6 +36,8 @@ export interface CompletedLogin extends AuthenticatedLogin {
   code: string;
 }
 
+const CODE_CHALLENGE_FORMAT = /^[A-Za-z0-9_-]{43,128}$/;
+
 export class LoginService {
   constructor(
     private readonly clients: ClientRegistry,
@@ -50,7 +52,8 @@ export class LoginService {
     if (!client.redirectUris.includes(req.redirectUri)) {
       throw new InvalidRedirectUriError();
     }
-    if (req.codeChallengeMethod !== 'S256' || !req.codeChallenge) {
+    // RFC 7636 §4.2: challenge — 43–128 символов base64url (S256 даёт ровно 43).
+    if (req.codeChallengeMethod !== 'S256' || !CODE_CHALLENGE_FORMAT.test(req.codeChallenge)) {
       throw new UnsupportedPkceError();
     }
     return { client, request: req };

@@ -68,7 +68,9 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  ACCESS_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  // Не меньше 30 с: приложение обновляет токен не чаще раза в 15 с (60
+  // запросов за 15 минут на сессию), с запасом вдвое.
+  ACCESS_TTL_SECONDS: z.coerce.number().int().min(30).default(900),
   ID_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   REFRESH_TTL_SECONDS: z.coerce.number().int().positive().default(2592000),
   CLIENTS_JSON: z.string().optional(),

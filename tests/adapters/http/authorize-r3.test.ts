@@ -30,7 +30,7 @@ function oidc(overrides: Record<string, string> = {}): Record<string, string> {
   return {
     client_id: 'app',
     redirect_uri: 'https://app.example/cb',
-    code_challenge: 'chal',
+    code_challenge: 'chalchalchalchalchalchalchalchalchalchalchal',
     code_challenge_method: 'S256',
     scope: 'openid',
     state: 'st1',
@@ -96,7 +96,7 @@ function fakeGoogle(deps: TestDeps): Map<string, GoogleTokenPayload> {
 
 const AUTHORIZE_URL =
   '/authorize?client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb' +
-  '&code_challenge=chal&code_challenge_method=S256&scope=openid&state=st1';
+  '&code_challenge=chalchalchalchalchalchalchalchalchalchalchal&code_challenge_method=S256&scope=openid&state=st1';
 
 async function renderNonce(app: App): Promise<string> {
   const res = await app.inject({ method: 'GET', url: AUTHORIZE_URL, headers: { cookie: `csrf=${TEST_CSRF}` } });

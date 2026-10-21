@@ -14,5 +14,5 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src", "tests"],
-  "exclude": ["tests/module", "tests/browser/module-logout.browser.ts"]
+  "exclude": ["tests/module", "tests/browser/module-logout.browser.ts", "tests/browser/module-unavailable.browser.ts"]
 }

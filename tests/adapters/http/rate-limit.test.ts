@@ -7,7 +7,7 @@ function identifyForm(overrides: Record<string, string> = {}): string {
   const base: Record<string, string> = {
     client_id: 'app',
     redirect_uri: 'https://app.example/cb',
-    code_challenge: 'chal',
+    code_challenge: 'chalchalchalchalchalchalchalchalchalchalchal',
     code_challenge_method: 'S256',
     scope: 'openid',
     state: 'st1',

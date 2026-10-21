@@ -84,7 +84,7 @@ describe('R5-B1: повторное «Получить код» из того ж
     const challenge = await startCodeLogin(app, 'user@x.com');
     const back = await app.inject({
       method: 'GET',
-      url: '/authorize?client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_challenge=chal&code_challenge_method=S256&scope=openid&prompt=login',
+      url: '/authorize?client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_challenge=chalchalchalchalchalchalchalchalchalchalchal&code_challenge_method=S256&scope=openid&prompt=login',
       headers: { cookie: `csrf=${TEST_CSRF}` },
     });
     expect(back.statusCode).toBe(200);
@@ -149,7 +149,7 @@ describe('R5-B1: кнопка формы блокируется после пе�
     const app = buildServer(deps);
     const page = await app.inject({
       method: 'GET',
-      url: '/authorize?client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_challenge=chal&code_challenge_method=S256&scope=openid',
+      url: '/authorize?client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_challenge=chalchalchalchalchalchalchalchalchalchalchal&code_challenge_method=S256&scope=openid',
     });
     expect(page.body).toContain('data-submit-once');
     expect(page.body).toContain('pageshow');
@@ -235,7 +235,7 @@ describe('R5: тексты неподтверждённых писем', () => {
     const app = buildServer(deps);
     const page = await app.inject({
       method: 'GET',
-      url: '/authorize?client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_challenge=chal&code_challenge_method=S256&scope=openid',
+      url: '/authorize?client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_challenge=chalchalchalchalchalchalchalchalchalchalchal&code_challenge_method=S256&scope=openid',
       headers: { cookie: `csrf=${TEST_CSRF}` },
     });
     const nonce = /nonce: '([^']+)'/.exec(page.body)![1]!;

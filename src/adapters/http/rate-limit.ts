@@ -2,7 +2,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { HttpDeps } from './deps.js';
 import type { RateLimiter } from '../../ports/rate-limiter.js';
 import { sha256Hex } from '../../domain/shared/hash.js';
-import { errorPage } from './views/error-page.js';
+import { errorPage, type ErrorPageBack } from './views/error-page.js';
 
 // Хешируем ip перед использованием в ключе лимитера: сам ключ (и его возможные
 // логи/хранилище) не должны содержать сырой адрес пользователя.
@@ -21,13 +21,15 @@ export function waitText(seconds: number): string {
 }
 
 // Отказ по лимиту: 429 + Retry-After и страница со временем ожидания.
-export function sendTooManyAttempts(reply: FastifyReply, retryAfterSeconds: number): void {
+// back — ссылка на страницу, откуда можно начать заново.
+export function sendTooManyAttempts(reply: FastifyReply, retryAfterSeconds: number, back?: ErrorPageBack): void {
   reply.header('Retry-After', String(retryAfterSeconds));
   reply.status(429);
   reply.type('text/html; charset=utf-8');
   reply.send(errorPage(
     'Слишком много попыток',
     `Повторить можно ${waitText(retryAfterSeconds)}. Вернитесь на страницу входа и попробуйте снова.`,
+    back,
   ));
 }
 
@@ -40,10 +42,11 @@ export async function enforce(
   key: string,
   rule: { limit: number; windowSeconds: number },
   limiter: RateLimiter = deps.rateLimiter,
+  back?: ErrorPageBack,
 ): Promise<boolean> {
   const r = await limiter.hit(key, rule.limit, rule.windowSeconds);
   if (!r.allowed) {
-    sendTooManyAttempts(reply, r.retryAfterSeconds);
+    sendTooManyAttempts(reply, r.retryAfterSeconds, back);
     return false;
   }
   return true;

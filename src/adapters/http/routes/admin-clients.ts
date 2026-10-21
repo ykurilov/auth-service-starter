@@ -1,7 +1,7 @@
 import { ZodError } from 'zod';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { HttpDeps } from '../deps.js';
-import { publicClient, type Client } from '../../../domain/clients/client.js';
+import { ClientAlreadyExistsError, publicClient, type Client } from '../../../domain/clients/client.js';
 import {
   ClientValidationError,
   assertProvidersAllowedForType,
@@ -56,7 +56,14 @@ export function registerAdminClients(app: FastifyInstance, deps: HttpDeps): void
     if (await store.findClient(client.id)) {
       return reply.status(409).send({ error: 'conflict' });
     }
-    await store.create(client);
+    // Гонка двух одновременных запросов: проверка выше обоих пропустила,
+    // запись проиграл второй — его хранилище отказывает по уникальному id.
+    try {
+      await store.create(client);
+    } catch (err) {
+      if (err instanceof ClientAlreadyExistsError) return reply.status(409).send({ error: 'conflict' });
+      throw err;
+    }
     return reply.status(201).send(publicClient(client));
   };
 

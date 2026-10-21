@@ -7,7 +7,7 @@ function query(overrides: Record<string, string> = {}): string {
     client_id: 'app',
     redirect_uri: 'https://app.example/cb',
     response_type: 'code',
-    code_challenge: 'chal',
+    code_challenge: 'chalchalchalchalchalchalchalchalchalchalchal',
     code_challenge_method: 'S256',
     scope: 'openid',
     state: 'st1',

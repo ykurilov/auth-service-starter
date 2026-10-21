@@ -16,7 +16,7 @@ describe('buildServer', () => {
     // Страница входа: именно её нельзя встроить в чужой iframe.
     const page = await app.inject({
       method: 'GET',
-      url: '/authorize?client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_challenge=chal&code_challenge_method=S256&scope=openid',
+      url: '/authorize?client_id=app&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_challenge=chalchalchalchalchalchalchalchalchalchalchal&code_challenge_method=S256&scope=openid',
     });
     expect(page.headers['x-frame-options']).toBe('DENY');
     expect(page.headers['content-security-policy']).toBe("frame-ancestors 'none'");

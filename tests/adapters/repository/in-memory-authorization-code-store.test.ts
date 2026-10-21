@@ -12,7 +12,7 @@ function rec(over: Partial<AuthorizationCodeRecord> = {}): AuthorizationCodeReco
     clientType: over.clientType ?? 'internal',
     userId: over.userId ?? 'u1',
     redirectUri: over.redirectUri ?? 'https://app1/cb',
-    codeChallenge: over.codeChallenge ?? 'chal',
+    codeChallenge: over.codeChallenge ?? 'chalchalchalchalchalchalchalchalchalchalchal',
     scope: over.scope ?? 'openid',
     nonce: over.nonce,
     auth: over.auth ?? { provider: 'email', emailVerified: false },

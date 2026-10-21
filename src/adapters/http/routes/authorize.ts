@@ -7,7 +7,7 @@ import type { HttpDeps } from '../deps.js';
 import type { AuthenticatedLogin, AuthorizationRequest } from '../../../domain/login/login-service.js';
 import { loginPage } from '../views/login-page.js';
 import { consentPage } from '../views/consent-page.js';
-import { errorPage } from '../views/error-page.js';
+import { errorPage, type ErrorPageBack } from '../views/error-page.js';
 import { authorizeUrl, type OidcParams } from '../views/oidc-params.js';
 import { setSsoCookie, readSsoCookie, readBindingCookie, setBindingCookie } from '../cookies.js';
 import { ensureCsrf, isSameOriginRequest, readCsrfCookie, verifyCsrf } from '../csrf.js';
@@ -63,7 +63,11 @@ const formSchema = z.object({
 // Первый шаг «Получить код»: адрес почты (строгая проверка — в обработчике).
 const identifySchema = formSchema.extend({ email: z.string().min(1).max(320) });
 // Переотправка и проверка кода — в рамках попытки: её handle из скрытого поля.
-const codeRequestSchema = formSchema.extend({ challenge: z.string().min(1).max(200) });
+// email_hint — адрес для подстановки в поле почты, если попытка уже истекла.
+const codeRequestSchema = formSchema.extend({
+  challenge: z.string().min(1).max(200),
+  email_hint: z.string().max(320).optional(),
+});
 const codeVerifySchema = codeRequestSchema.extend({ code: z.string().min(1).max(32) });
 // Вход через Google: OIDC-параметры + ID Token (credential) от GIS-виджета.
 const googleSchema = formSchema.extend({ credential: z.string().min(1) });
@@ -118,11 +122,23 @@ export function html(reply: FastifyReply, status: number, body: string): Fastify
 // Единая точка отказа для POST-форм входа: чужой origin или нет валидной
 // csrf-пары — нейтральная страница-ошибка, до любых обращений к хранилищам и
 // провайдерам. Значение csrf-cookie дальше служит привязкой к браузеру.
-function csrfGuard(req: FastifyRequest, reply: FastifyReply, config: Config, field: unknown): string | null {
+function csrfGuard(
+  req: FastifyRequest, reply: FastifyReply, config: Config, field: unknown, params: OidcParams,
+): string | null {
   const cookie = readCsrfCookie(req, config);
   if (cookie !== null && isSameOriginRequest(req, config) && verifyCsrf(req, config, field)) return cookie;
-  html(reply, 400, errorPage('Некорректный запрос', 'Сессия формы истекла'));
+  html(reply, 400, errorPage(
+    'Некорректный запрос',
+    'Сессия формы истекла. Вернитесь ко входу и начните заново.',
+    backToSignIn(params),
+  ));
   return null;
+}
+
+// Ссылка «ко входу» с теми же параметрами: сам /authorize проверит их заново.
+// prompt=login — сразу ввод почты, SSO-cookie не уведёт на экран согласия.
+function backToSignIn(params: OidcParams): ErrorPageBack {
+  return { href: authorizeUrl(params, true), label: 'Вернуться ко входу' };
 }
 
 // RFC 6749 §4.1.2.1: ошибка возвращается клиенту редиректом на redirect_uri.
@@ -172,7 +188,7 @@ function authorizeError(
 ): FastifyReply {
   const protocolError =
     err instanceof UnsupportedPkceError
-      ? { error: 'invalid_request', description: 'PKCE code_challenge with method S256 is required' }
+      ? { error: 'invalid_request', description: 'PKCE code_challenge (43-128 base64url characters) with method S256 is required' }
       : err instanceof ProviderNotAllowedError
         ? { error: 'unauthorized_client', description: 'login method is not allowed for this client' }
         : null;
@@ -252,7 +268,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
         params,
         csrfToken,
         emailAllowed: validated.client.allowedProviders.includes(EMAIL_PROVIDER),
-        ...(extra.email !== undefined ? { email: extra.email } : {}),
+        ...(extra.email !== undefined ? { email: displayEmail(extra.email) } : {}),
         ...(extra.error !== undefined ? { error: extra.error } : {}),
         ...(extra.notice !== undefined ? { notice: extra.notice } : {}),
         ...(await googleFields(req, validated, csrfToken)),
@@ -347,6 +363,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
   const enforceSendBudget = async (
     req: FastifyRequest,
     reply: FastifyReply,
+    params: OidcParams,
     email: string,
     send: 'new-attempt' | 'resend',
   ): Promise<{ spent: string[] } | { emailPause: number } | null> => {
@@ -366,7 +383,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
       if (!hit.allowed) {
         await refundSendBudget(spent);
         if (key === pauseKey) return { emailPause: hit.retryAfterSeconds };
-        sendTooManyAttempts(reply, hit.retryAfterSeconds);
+        sendTooManyAttempts(reply, hit.retryAfterSeconds, backToSignIn(params));
         return null;
       }
       spent.push(key);
@@ -401,7 +418,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
         error: 'Проверьте адрес почты',
         status: 400,
       });
-    const budget = await enforceSendBudget(req, reply, email, 'new-attempt');
+    const budget = await enforceSendBudget(req, reply, params, email, 'new-attempt');
     if (!budget) return reply;
     if ('emailPause' in budget) {
       const resumed = await deps.codeProvider.resume({ email, binding, client: validated.client, ...(link ? { link } : {}) });
@@ -517,9 +534,9 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
       return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
     const { csrf, credential, ...rest } = parsed.data;
     const params: OidcParams = rest;
-    const binding = csrfGuard(req, reply, deps.config, csrf);
+    const binding = csrfGuard(req, reply, deps.config, csrf, params);
     if (binding === null) return;
-    if (!(await enforce(deps, reply, `google:${ipHash(req)}`, deps.config.rateLimits.identifyPerIp)))
+    if (!(await enforce(deps, reply, `google:${ipHash(req)}`, deps.config.rateLimits.identifyPerIp, undefined, backToSignIn(params))))
       return;
     let validated;
     try {
@@ -567,7 +584,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
       readCsrfCookie(req, deps.config) !== null &&
       isSameOriginRequest(req, deps.config) &&
       !verifyCsrf(req, deps.config, csrf);
-    const binding = staleForm ? null : csrfGuard(req, reply, deps.config, csrf);
+    const binding = staleForm ? null : csrfGuard(req, reply, deps.config, csrf, params);
     if (!staleForm && binding === null) return;
     let validated;
     try {
@@ -592,9 +609,9 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     const parsed = codeRequestSchema.safeParse(req.body);
     if (!parsed.success)
       return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
-    const { csrf, challenge, ...rest } = parsed.data;
+    const { csrf, challenge, email_hint, ...rest } = parsed.data;
     const params: OidcParams = rest;
-    const binding = csrfGuard(req, reply, deps.config, csrf);
+    const binding = csrfGuard(req, reply, deps.config, csrf, params);
     if (binding === null) return;
     let validated;
     try {
@@ -605,6 +622,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     const view = await deps.codeProvider.describe({ handle: challenge, binding });
     if (!view)
       return identifyPage(req, reply, params, validated, {
+        ...(email_hint ? { email: email_hint } : {}),
         error: 'Код истёк или попытки закончились — запросите новый код',
       });
     if (!view.startedFor(validated.client)) return clientChanged(req, reply, params, validated);
@@ -616,7 +634,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     // Попытка уже исчерпана (повторы или проверки) — письма не будет, и бюджет
     // отправок не тратим.
     if (view.resendsLeft <= 0 || view.attemptsLeft <= 0) return resendExhausted();
-    const budget = await enforceSendBudget(req, reply, view.email, 'resend');
+    const budget = await enforceSendBudget(req, reply, params, view.email, 'resend');
     if (!budget) return reply;
     // Переотправка тратит только бюджет источника: паузы адреса у неё нет.
     const spent = 'spent' in budget ? budget.spent : [];
@@ -665,6 +683,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     validated: ValidatedAuthorization,
     challenge: string,
     binding: string,
+    emailHint?: string,
   ): Promise<FastifyReply> => {
     const view = await deps.codeProvider.describe({ handle: challenge, binding });
     logSecurityEvent(deps.logger, req, 'login_failed', {
@@ -685,7 +704,10 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
         .header('cache-control', 'no-store')
         .send(exhausted ? { error: message, restartTo: authorizeUrl(params, true) } : { error: message });
     if (exhausted)
-      return identifyPage(req, reply, params, validated, { ...(view ? { email: view.email } : {}), error: message });
+      return identifyPage(req, reply, params, validated, {
+        ...(view ? { email: view.email } : emailHint ? { email: emailHint } : {}),
+        error: message,
+      });
     return codePage(req, reply, params, { email: view.email, challenge, error: message });
   };
 
@@ -693,9 +715,9 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     const parsed = codeVerifySchema.safeParse(req.body);
     if (!parsed.success)
       return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
-    const { csrf, challenge, code, ...rest } = parsed.data;
+    const { csrf, challenge, code, email_hint, ...rest } = parsed.data;
     const params: OidcParams = rest;
-    const binding = csrfGuard(req, reply, deps.config, csrf);
+    const binding = csrfGuard(req, reply, deps.config, csrf, params);
     if (binding === null) return;
     // Общий бюджет неверных кодов одного источника на все попытки и адреса.
     // Списываем до проверки (параллельный перебор не обгонит предел) и
@@ -704,7 +726,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     // записи; лимита по адресу нет, чтобы посторонний не мог заблокировать
     // вход владельцу.
     const verifyBudgetKey = `code-vrf-ip:${ipHash(req)}`;
-    if (!(await enforce(deps, reply, verifyBudgetKey, deps.config.rateLimits.codeVerifyPerIp, otp)))
+    if (!(await enforce(deps, reply, verifyBudgetKey, deps.config.rateLimits.codeVerifyPerIp, otp, backToSignIn(params))))
       return;
     let wrongCodeCharged = false;
     const verifyCode = async () => {
@@ -728,7 +750,7 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
         if (err instanceof ChallengeClientChangedError) return clientChanged(req, reply, params, validated);
         if (!(err instanceof InvalidCredentialsError)) return authorizeError(err, req, reply, params, deps.logger);
         wrongCodeCharged = true;
-        return wrongCode(req, reply, params, validated, challenge, binding);
+        return wrongCode(req, reply, params, validated, challenge, binding, email_hint);
       }
       // Попытка начата входом через Google со сторонним адресом: код доказал
       // владение — входим этой Google-личностью, IdentityService привяжет её
@@ -764,13 +786,30 @@ export function registerAuthorize(app: FastifyInstance, deps: HttpDeps): void {
     }
   });
 
+  // «Отказаться» на экране согласия: приложение получает access_denied на
+  // проверенный redirect_uri. Код не выдаётся, SSO-сессия остаётся.
+  app.post('/authorize/deny', async (req, reply) => {
+    const parsed = formSchema.safeParse(req.body);
+    if (!parsed.success)
+      return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
+    const { csrf, ...rest } = parsed.data;
+    const params: OidcParams = rest;
+    if (csrfGuard(req, reply, deps.config, csrf, params) === null) return;
+    try {
+      await deps.login.validateRequest(toAuthorizationRequest(params));
+    } catch (err) {
+      return authorizeError(err, req, reply, params, deps.logger);
+    }
+    return redirectWithError(reply, params.redirect_uri, 'access_denied', 'the user denied the request', params.state);
+  });
+
   app.post('/authorize/confirm', async (req, reply) => {
     const parsed = confirmSchema.safeParse(req.body);
     if (!parsed.success)
       return html(reply, 400, errorPage('Некорректный запрос', 'Проверьте поля формы'));
     const { csrf, expected_user, ...rest } = parsed.data;
     const params: OidcParams = rest;
-    if (csrfGuard(req, reply, deps.config, csrf) === null) return;
+    if (csrfGuard(req, reply, deps.config, csrf, params) === null) return;
     let validated;
     try {
       validated = await deps.login.validateRequest(toAuthorizationRequest(params));

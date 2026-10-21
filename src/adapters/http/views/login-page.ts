@@ -9,8 +9,9 @@ export interface LoginPageInput {
   mode?: 'identify' | 'code';
   email?: string;
   // handle попытки входа по коду (режим code): скрытое поле обеих форм экрана
-  // ввода — проверки и переотправки. Адрес в формах больше не передаётся:
-  // попытка знает его сама.
+  // ввода — проверки и переотправки. Адрес для сервера в формах не передаётся:
+  // попытка знает его сама. Скрытое поле email_hint несёт адрес лишь для
+  // подстановки в поле почты, если попытка к отправке уже исчезла.
   challenge?: string;
   error?: string;
   notice?: string;
@@ -54,7 +55,12 @@ function googleSignIn(clientId: string, nonce: string, hf: string, csrfField: st
       <input type="hidden" name="credential">
     </form>
     <div id="google-btn"></div>
+    <noscript><p class="muted">Для входа через Google нужен JavaScript. Включите его в браузере${divider ? ' или войдите по почте' : ''}.</p></noscript>
+    <p id="google-unavailable" class="muted" hidden>Не удалось загрузить вход через Google. Проверьте, что скрипт Google не заблокирован расширением или сетью${divider ? ', или войдите по почте' : ''}.</p>
     <script>
+      function onGoogleLibError() {
+        document.getElementById('google-unavailable').hidden = false;
+      }
       function onGoogleLibLoad() {
         google.accounts.id.initialize({
           client_id: '${cid}',
@@ -73,7 +79,7 @@ function googleSignIn(clientId: string, nonce: string, hf: string, csrfField: st
         });
       }
     </script>
-    <script src="https://accounts.google.com/gsi/client" onload="onGoogleLibLoad()" async defer></script>`;
+    <script src="https://accounts.google.com/gsi/client" onload="onGoogleLibLoad()" onerror="onGoogleLibError()" async defer></script>`;
 }
 
 // Успешный вход заменяет текущую запись формы в истории. Нативный POST остаётся
@@ -143,6 +149,10 @@ function codeFormNavigation(p: OidcParams): string {
           showError('Не удалось войти, проверьте соединение и попробуйте ещё раз');
         } finally {
           if (button) button.disabled = false;
+          // После отправки фокус остаётся на отключённой кнопке и уходит в BODY:
+          // возвращаем его в поле кода, чтобы можно было сразу поправить код.
+          var codeInput = form.elements && form.elements.code;
+          if (codeInput && !form.hidden && codeInput.focus) codeInput.focus();
         }
       });
     })();
@@ -186,7 +196,9 @@ export function loginPage(input: LoginPageInput): string {
   const err = input.error ? `<div class="alert alert-danger">${escapeHtml(input.error)}</div>` : '';
   const notice = input.notice ? `<div class="alert alert-success">${escapeHtml(input.notice)}</div>` : '';
   const mode = input.mode ?? 'identify';
-  const challengeField = `<input type="hidden" name="challenge" value="${escapeHtml(input.challenge ?? '')}">`;
+  const challengeField =
+    `<input type="hidden" name="challenge" value="${escapeHtml(input.challenge ?? '')}">` +
+    `<input type="hidden" name="email_hint" value="${email}">`;
 
   const restart = `<p class="auth-more"><a href="${escapeHtml(restartUrl(p))}">Войти с другой почтой</a></p>`;
 
@@ -197,7 +209,7 @@ export function loginPage(input: LoginPageInput): string {
     case 'code':
       title = 'Код из письма';
       body = `<h1 class="h2">Код из письма</h1>${err}${notice}
-        <div id="code-submit-error" class="alert alert-danger" hidden></div>
+        <div id="code-submit-error" class="alert alert-danger" role="alert" hidden></div>
         <p class="muted">Отправили код на <strong>${email}</strong>.</p>
         <form id="code-form" method="post" action="/authorize/code/verify">
           ${hf}

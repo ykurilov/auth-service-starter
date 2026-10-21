@@ -8,7 +8,7 @@ import type { OidcParams } from '../../../src/adapters/http/views/oidc-params.js
 const params: OidcParams = {
   client_id: 'app',
   redirect_uri: 'https://app.example/cb',
-  code_challenge: 'chal',
+  code_challenge: 'chalchalchalchalchalchalchalchalchalchalchal',
   code_challenge_method: 'S256',
   scope: 'openid',
   state: 's&1',
@@ -45,7 +45,7 @@ describe('login-page', () => {
 
   it('скрывает пустой блок клиентской ошибки до неуспешной отправки', () => {
     const html = loginPage({ params, mode: 'code', email: 'a@b.co' });
-    expect(html).toContain('id="code-submit-error" class="alert alert-danger" hidden');
+    expect(html).toContain('id="code-submit-error" class="alert alert-danger" role="alert" hidden');
     expect(html).toContain('.auth-main .alert[hidden] { display: none !important; }');
   });
 
@@ -148,10 +148,12 @@ describe('login-page: скрипт формы кода', () => {
     if (!script) throw new Error('нет скрипта формы кода');
     let submit: Handler | undefined;
     const button = { disabled: false };
+    const codeInput = { focus: vi.fn() };
     const el = {
       'code-form': {
         action: '/authorize/code/verify',
         hidden: false,
+        elements: { code: codeInput },
         querySelector: () => button,
         addEventListener: (_: string, fn: Handler) => { submit = fn; },
       },
@@ -168,6 +170,7 @@ describe('login-page: скрипт формы кода', () => {
     new Function('window', 'document', 'fetch', 'FormData', script)(window, document, fetchImpl, FormData);
     return {
       el,
+      codeInput,
       replaceState,
       location,
       submit: () => submit!({ preventDefault() {} }),
@@ -216,6 +219,22 @@ describe('login-page: скрипт формы кода', () => {
     expect(page.el['code-restart']!.hidden).toBe(false);
     expect(page.el['code-restart-link']!.href).toBe('/authorize?client_id=app&prompt=login');
     expect(page.location.replace).not.toHaveBeenCalled();
+  });
+
+  it('п.7: после ошибки фокус возвращается в поле кода', async () => {
+    const page = runCodeScript(async () =>
+      response(401, 'application/json; charset=utf-8', { error: 'Неверный или просроченный код' }),
+    );
+    await page.submit();
+    expect(page.codeInput.focus).toHaveBeenCalled();
+  });
+
+  it('п.7: при исчерпанной попытке (форма скрыта) фокус не трогаем', async () => {
+    const page = runCodeScript(async () =>
+      response(401, 'application/json; charset=utf-8', { error: 'x', restartTo: '/authorize?client_id=app' }),
+    );
+    await page.submit();
+    expect(page.codeInput.focus).not.toHaveBeenCalled();
   });
 
   it('успех → переход по redirectTo', async () => {

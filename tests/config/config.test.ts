@@ -30,6 +30,12 @@ describe('loadConfig', () => {
     expect(cfg.rateLimits.codeRequest.limit).toBeGreaterThanOrEqual(4);
   });
 
+  it('п.20: ACCESS_TTL_SECONDS меньше 30 секунд отклоняется (иначе упрёмся в лимит refresh)', () => {
+    const env = { PUBLIC_ISSUER_URL: 'https://auth.example.com' };
+    expect(() => loadConfig({ ...env, ACCESS_TTL_SECONDS: '29' } as NodeJS.ProcessEnv)).toThrow(/ACCESS_TTL_SECONDS/);
+    expect(loadConfig({ ...env, ACCESS_TTL_SECONDS: '30' } as NodeJS.ProcessEnv).accessTtlSeconds).toBe(30);
+  });
+
   it('refreshTtlSeconds по умолчанию 30 дней', () => {
     const cfg = loadConfig({
       PUBLIC_ISSUER_URL: 'https://auth.example.com',

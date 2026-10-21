@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   applyClientPatch,
+  ClientAlreadyExistsError,
   type Client,
   type ClientPatch,
   type ClientWriteStore,
@@ -24,7 +25,7 @@ export class InMemoryClientRegistry implements ClientWriteStore {
 
   async create(client: Client): Promise<void> {
     if (this.byId.has(client.id)) {
-      throw new Error(`client already exists: ${client.id}`);
+      throw new ClientAlreadyExistsError(client.id);
     }
     this.byId.set(client.id, InMemoryClientRegistry.registered(client));
   }

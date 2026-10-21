@@ -40,6 +40,9 @@ export function consentPage(input: ConsentPageInput): string {
     `<div class="auth-divider">или</div>` +
     `<form method="get" action="/authorize">${hf}` +
     `<input type="hidden" name="prompt" value="login">` +
-    `<button type="submit" class="btn">Войти другим аккаунтом</button></form>`;
+    `<button type="submit" class="btn">Войти другим аккаунтом</button></form>` +
+    `<form method="post" action="/authorize/deny">${hf}` +
+    `<input type="hidden" name="csrf" value="${csrf}">` +
+    `<button type="submit" class="btn">Отказаться</button></form>`;
   return pageLayout('Подтверждение входа', body);
 }
